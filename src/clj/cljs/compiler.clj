@@ -39,6 +39,7 @@
 (def ^:dynamic *cljs-ns* 'cljs.user)
 (def ^:dynamic *cljs-file* nil)
 (def ^:dynamic *cljs-warn-on-undeclared* false)
+(def ^:dynamic *position* nil)
 
 (defmacro ^:private debug-prn
   [& args]
@@ -190,12 +191,24 @@
       (map? x) (emit x)
       (seq? x) (apply emitx x)
       (fn? x)  (x)
-      :else    (print x)))
+      :else (do
+              (let [s (print-str x)]
+                (when *position*
+                  (swap! *position* (fn [[line column]]
+                                      [line (+ column (count s))])))
+                (print s)))))
   nil)
 
 (defn emitln [& xs]
   (apply emitx xs)
+  ;; Prints column-aligned line number comments; good test of *position*.
+  ;(when *position*
+  ;  (let [[line column] @*position*]
+  ;    (print (apply str (concat (repeat (- 120 column) \space) ["// " (inc line)])))))
   (println)
+  (when *position*
+    (swap! *position* (fn [[line column]]
+                        [(inc line) 0])))
   nil)
 
 (defmulti emit-constant class)
@@ -1210,7 +1223,8 @@
     (with-open [out ^java.io.Writer (io/make-writer dest {})]
       (binding [*out* out
                 *cljs-ns* 'cljs.user
-                *cljs-file* (.getPath ^java.io.File src)]
+                *cljs-file* (.getPath ^java.io.File src)
+                *position* (atom [0 0])]
         (loop [forms (forms-seq src)
                ns-name nil
                deps nil]
