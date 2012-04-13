@@ -981,7 +981,8 @@
 
 (defmethod parse 'ns
   [_ env [_ name & args] _]
-  (let [excludes
+  (let [ args (if (string? (first args)) (rest args) args)
+  excludes
         (reduce (fn [s [k exclude xs]]
                   (if (= k :refer-clojure)
                     (do

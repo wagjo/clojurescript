@@ -3882,3 +3882,53 @@ reduces them without incurring seq initialization"
 (defn prefers
   "Given a multimethod, returns a map of preferred value -> set of other values"
   [multifn] (-prefers multifn))
+
+;; WAGJO CUSTOM STUFF
+(defn log
+  [& ss] (.log js/console (apply str (interpose \newline ss))))
+
+;; start chrome with --enable-benchmarking arg
+(def tracer (js/Array. 20))
+(def tracer-index (atom 0))
+(def ht (when (and (goog/isDef js/chrome) (goog/isDef chrome.Interval)) 
+          (chrome.Interval.)))
+(def tracer-started (atom false))
+
+(defn trace-reset
+  []
+  (doseq [x (range 20)]
+    (aset tracer x nil)))
+
+(defn trace-start
+  [n]
+  (reset! tracer-index 0)
+  (reset! tracer-started n)
+  (when ht
+    (.start ht)))
+
+;; trace overhead is between 2 to 7 us
+(defn trace
+  [x]
+  (when @tracer-started
+    (let [i @tracer-index
+          p (or (second (aget tracer i)) [])
+          r [x (conj p (when ht (.microseconds ht)))]]
+      (aset tracer i r))
+    (swap! tracer-index inc)))
+
+(defn trace-stop
+  []
+  (when ht
+    (.stop ht))
+  (trace nil)
+  (when (= 0 (mod (count (second (aget tracer 0))) @tracer-started))
+    (let [get-avg #(let [ms (sort (second (aget tracer %)))]
+                     (nth ms (/ (count ms) 2) 0))
+          t-to-str #(let [[x _] (aget tracer %)
+                          pt (if (> % 0) (get-avg (dec %)) 0)]
+                      (str x (when x " ") "[" (/ (- (get-avg %) pt) 1000) "]"))]
+      (log (str (apply str (interpose \newline (map t-to-str
+                                                    (range @tracer-index))))
+                " (" (/ (get-avg (dec @tracer-index)) 1000)  ") on "
+                (count (second (aget tracer 0)))))))
+  (reset! tracer-started false))
