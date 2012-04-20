@@ -160,6 +160,15 @@
   (assert (= [[1 1] [1 2] [1 3] [2 1] [2 2] [2 3]]
              (map #(%) (for [i [1 2] j [1 2 3]] (fn [] [i j])))))
 
+  (assert (= 42 (int 42.5)))
+  (assert (integer? (int 42.5)))
+
+  (assert (= 42 (long 42.5)))
+  (assert (integer? (long 42.5)))
+
+  (assert (= -1 (int -1.5)))
+  (assert (= -9 (long -9.8)))
+
   (assert (= 2 (:b {:a 1 :b 2})))
   (assert (= 2 ('b '{:a 1 b 2})))
   (assert (= 2 ({:a 1 :b 2} :b)))
@@ -898,6 +907,14 @@
     (assert (= (nth pv 97 nil) nil))
     (assert (= (pv 96) 96)))
 
+  (let [pv (vec (range 33))]
+    (assert (= pv
+               (-> pv
+                   pop
+                   pop
+                   (conj 31)
+                   (conj 32)))))
+  
   (let [stack1 (pop (vec (range 97)))
         stack2 (pop stack1)]
     (assert (= 95 (peek stack1)))
