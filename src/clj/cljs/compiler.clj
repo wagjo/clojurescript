@@ -37,6 +37,11 @@
 (defonce namespaces (atom '{cljs.core {:name cljs.core}
                             cljs.user {:name cljs.user}}))
 
+(defn reset-namespaces! []
+  (reset! namespaces
+    '{cljs.core {:name cljs.core}
+      cljs.user {:name cljs.user}}))
+
 (def ^:dynamic *cljs-ns* 'cljs.user)
 (def ^:dynamic *cljs-file* nil)
 (def ^:dynamic *cljs-warn-on-undeclared* false)
@@ -645,13 +650,13 @@
                  (-> f :info :fn-var))
         js? (= (-> f :info :ns) 'js)
         f (if fn?
-            (let [info (-> f :info :info)
+            (let [info (-> f :info)
                   arity (count args)
-                  methods (:methods info)]
+                  mps (:method-params info)]
               (if (or (> arity (:max-fixed-arity info))
-                      (= (count methods) 1))
+                      (= (count mps) 1))
                 f
-                (let [arities (map #(-> % :params count) methods)]
+                (let [arities (map count mps)]
                   (if (some #{arity} arities)
                     (update-in f [:info :name]
                                (fn [name] (symbol (str name ".cljs$lang$arity$" arity))))
@@ -859,7 +864,11 @@
                    (when-let [line (:line env)]
                      {:file *cljs-file* :line line})
                    (when fn-var?
-                     {:fn-var true :info init-expr})))))
+                     {:fn-var true
+                      :max-fixed-arity (:max-fixed-arity init-expr)
+                      :method-params (map (fn [m]
+                                            (:params m))
+                                          (:methods init-expr))})))))
       (merge {:env env :op :def :form form
               :name name :doc doc :init init-expr}
              (when tag {:tag tag})
