@@ -459,12 +459,18 @@ reduces them without incurring seq initialization"
   IHash
   (-hash [coll] (hash-coll coll)))
 
-(defn prim-seq [prim i]
-  (when-not (zero? (.-length prim))
-    (IndexedSeq. prim i)))
+(defn prim-seq
+  ([prim]
+     (prim-seq prim 0))
+  ([prim i]
+     (when-not (zero? (.-length prim))
+       (IndexedSeq. prim i))))
 
-(defn array-seq [array i]
-  (prim-seq array i))
+(defn array-seq
+  ([array]
+     (prim-seq array 0))
+  ([array i]
+     (prim-seq array i)))
 
 (extend-type array
   ISeqable
@@ -5782,8 +5788,8 @@ reduces them without incurring seq initialization"
   IndexedSeq
   (-pr-seq [coll opts] (pr-sequential pr-seq "(" " " ")" opts coll))
 
-  PersistentQueueSeq
-  (-pr-seq [coll opts] (pr-sequential pr-seq "(" " " ")" opts coll))
+  PersistentQueue
+  (-pr-seq [coll opts] (pr-sequential pr-seq "#queue [" " " "]" opts (seq coll)))
 
   PersistentTreeMapSeq
   (-pr-seq [coll opts] (pr-sequential pr-seq "(" " " ")" opts coll))

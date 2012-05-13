@@ -20,7 +20,8 @@
                             aget aset
                             + - * / < <= > >= == zero? pos? neg? inc dec max min mod
                             bit-and bit-and-not bit-clear bit-flip bit-not bit-or bit-set
-                            bit-test bit-shift-left bit-shift-right bit-xor]))
+                            bit-test bit-shift-left bit-shift-right bit-xor])
+  (:require clojure.walk))
 
 (alias 'core 'clojure.core)
 
@@ -248,6 +249,39 @@
        (let [h# (~hash-fn ~coll)]
          (set! ~hash-key h#)
          h#))))
+
+;;; internal -- reducers-related macros
+
+(defn- do-curried
+  [name doc meta args body]
+  (let [cargs (vec (butlast args))]
+    `(defn ~name ~doc ~meta
+       (~cargs (fn [x#] (~name ~@cargs x#)))
+       (~args ~@body))))
+
+(defmacro ^:private defcurried
+  "Builds another arity of the fn that returns a fn awaiting the last
+  param"
+  [name doc meta args & body]
+  (do-curried name doc meta args body))
+
+(defn- do-rfn [f1 k fkv]
+  `(fn
+     ([] (~f1))
+     ~(clojure.walk/postwalk
+       #(if (sequential? %)
+          ((if (vector? %) vec identity)
+           (core/remove #{k} %))
+          %)
+       fkv)
+     ~fkv))
+
+(defmacro ^:private rfn
+  "Builds 3-arity reducing fn given names of wrapped fn and key, and k/v impl."
+  [[f1 k] fkv]
+  (do-rfn f1 k fkv))
+
+;;; end of reducers macros
 
 (defn- protocol-prefix [psym]
   (core/str (.replace (core/str psym) \. \$) "$"))
@@ -640,10 +674,23 @@
   (let [default (if (odd? (count clauses))
                   (last clauses)
                   `(throw (js/Error. (core/str "No matching clause: " ~e))))
-        pairs (partition 2 clauses)]
-   `(condp = ~e
-      ~@(apply concat pairs)
-      ~default)))
+        assoc-test (fn assoc-test [m test expr]
+                         (if (contains? m test)
+                           (throw (clojure.core/IllegalArgumentException.
+                                   (core/str "Duplicate case test constant '"
+                                             test "'"
+                                             (when (:line &env)
+                                               (core/str " on line " (:line &env) " "
+                                                         cljs.compiler/*cljs-file*)))))
+                           (assoc m test expr)))
+        pairs (reduce (fn [m [test expr]]
+                        (if (seq? test)
+                          (reduce #(assoc-test %1 %2 expr) m test)
+                          (assoc-test m test expr)))
+                      {} (partition 2 clauses))]
+   `(cond
+     ~@(mapcat (fn [[m c]] `((identical? ~m ~e) ~c)) pairs)
+     :else ~default)))
 
 (defmacro try
   "(try expr* catch-clause* finally-clause?)
@@ -912,6 +959,24 @@
          ret# ~expr]
      (prn (core/str "Elapsed time: " (- (.getTime (js/Date.) ()) start#) " msecs"))
      ret#))
+
+(defmacro simple-benchmark
+  "Runs expr iterations times in the context of a let expression with
+  the given bindings, then prints out the bindings and the expr
+  followed by number of iterations and total time. The optional
+  argument print-fn, defaulting to println, sets function used to
+  print the result. expr's string representation will be produced
+  using pr-str in any case."
+  [bindings expr iterations & {:keys [print-fn] :or {print-fn 'println}}]
+  (let [bs-str   (pr-str bindings)
+        expr-str (pr-str expr)]
+    `(let ~bindings
+       (let [start#   (.getTime (js/Date.))
+             ret#     (dotimes [_# ~iterations] ~expr)
+             end#     (.getTime (js/Date.))
+             elapsed# (- end# start#)]
+         (~print-fn (str ~bs-str ", " ~expr-str ", "
+                         ~iterations " runs, " elapsed# " msecs"))))))
 
 (def cs (into [] (map (comp symbol core/str char) (range 97 118))))
 
