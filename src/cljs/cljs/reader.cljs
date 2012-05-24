@@ -65,10 +65,11 @@ nil if the end of stream has been reached")
 ;; read helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+
 ; later will do e.g. line numbers...
 (defn reader-error
   [rdr & msg]
-  (throw (apply str msg)))
+  (throw (js/Error. (apply str msg))))
 
 (defn ^boolean macro-terminating? [ch]
   (and (coercive-not= ch "#")
@@ -158,19 +159,45 @@ nil if the end of stream has been reached")
    (re-matches* float-pattern s) (match-float s)))
 
 (defn escape-char-map [c]
-  (case c
-    \t "\t"
-    \r "\r"
-    \n "\n"
-    \\ \\
-    \" \"
-    \b "\b"
-    \f "\f"
-    nil))
+  (cond
+   (identical? c \t) "\t"
+   (identical? c \r) "\r"
+   (identical? c \n) "\n"
+   (identical? c \\) \\
+   (identical? c \") \"
+   (identical? c \b) "\b"
+   (identical? c \f) "\f"
+   :else nil))
 
-(defn read-unicode-char
-  [reader initch]
-  (reader-error reader "Unicode characters not supported by reader (yet)"))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; unicode
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn read-2-chars [reader]
+  (.toString
+    (gstring/StringBuffer.
+      (read-char reader)
+      (read-char reader))))
+
+(defn read-4-chars [reader]
+  (.toString
+    (gstring/StringBuffer.
+      (read-char reader)
+      (read-char reader)
+      (read-char reader)
+      (read-char reader))))
+
+(def unicode-2-pattern (re-pattern "[0-9A-Fa-f]{2}"))
+(def unicode-4-pattern (re-pattern "[0-9A-Fa-f]{4}"))
+
+(defn validate-unicode-escape [unicode-pattern reader escape-char unicode-str]
+  (if (re-matches unicode-pattern unicode-str)
+    unicode-str
+    (reader-error reader "Unexpected unicode escape \\" escape-char unicode-str)))
+
+(defn make-unicode-char [code-str]
+    (let [code (js/parseInt code-str 16)]
+      (.fromCharCode js/String code)))
 
 (defn escape-char
   [buffer reader]
@@ -178,9 +205,22 @@ nil if the end of stream has been reached")
         mapresult (escape-char-map ch)]
     (if mapresult
       mapresult
-      (if (or (identical? \u ch) (numeric? ch))
-        (read-unicode-char reader ch)
-        (reader-error reader "Unsupported escape character: \\" ch)))))
+      (cond
+        (identical? ch \x)
+        (->> (read-2-chars reader)
+          (validate-unicode-escape unicode-2-pattern reader ch)
+          (make-unicode-char))
+
+        (identical? ch \u)
+        (->> (read-4-chars reader)
+          (validate-unicode-escape unicode-4-pattern reader ch)
+          (make-unicode-char))
+
+        (numeric? ch)
+        (.fromCharCode js/String ch)
+
+        :else
+        (reader-error reader "Unexpected unicode escape \\" ch )))))
 
 (defn read-past
   "Read until first character that doesn't match pred, returning
@@ -270,10 +310,12 @@ nil if the end of stream has been reached")
      (identical? \" ch) (. buffer (toString))
      :default (recur (do (.append buffer ch) buffer) (read-char reader)))))
 
-(def special-symbols
-  {"nil" nil
-   "true" true
-   "false" false})
+(defn special-symbols [t not-found]
+  (cond
+   (identical? t "nil") nil
+   (identical? t "true") true
+   (identical? t "false") false
+   :else not-found))
 
 (defn read-symbol
   [reader initch]
@@ -281,7 +323,7 @@ nil if the end of stream has been reached")
     (if (gstring/contains token "/")
       (symbol (subs token 0 (.indexOf token "/"))
               (subs token (inc (.indexOf token "/")) (.-length token)))
-      (get special-symbols token (symbol token)))))
+      (special-symbols token (symbol token)))))
 
 (defn read-keyword
   [reader initch]
@@ -295,7 +337,7 @@ nil if the end of stream has been reached")
             (identical? (aget name (dec (.-length name))) ":")
             (coercive-not (== (.indexOf token "::" 1) -1)))
       (reader-error reader "Invalid token: " token)
-      (if ns
+      (if (and (coercive-not= ns nil) (> (.-length ns) 0))
         (keyword (.substring ns 0 (.indexOf ns "/")) name)
         (keyword token)))))
 
@@ -341,35 +383,35 @@ nil if the end of stream has been reached")
   rdr)
 
 (defn macros [c]
-  (case c
-    \" read-string*
-    \: read-keyword
-    \; not-implemented ;; never hit this
-    \' (wrapping-reader 'quote)
-    \@ (wrapping-reader 'deref)
-    \^ read-meta
-    \` not-implemented
-    \~ not-implemented
-    \( read-list
-    \) read-unmatched-delimiter
-    \[ read-vector
-    \] read-unmatched-delimiter
-    \{ read-map
-    \} read-unmatched-delimiter
-    \\ read-char
-    \% not-implemented
-    \# read-dispatch
-    nil))
+  (cond
+   (identical? c \") read-string*
+   (identical? c \:) read-keyword
+   (identical? c \;) not-implemented ;; never hit this
+   (identical? c \') (wrapping-reader 'quote)
+   (identical? c \@) (wrapping-reader 'deref)
+   (identical? c \^) read-meta
+   (identical? c \`) not-implemented
+   (identical? c \~) not-implemented
+   (identical? c \() read-list
+   (identical? c \)) read-unmatched-delimiter
+   (identical? c \[) read-vector
+   (identical? c \]) read-unmatched-delimiter
+   (identical? c \{) read-map
+   (identical? c \}) read-unmatched-delimiter
+   (identical? c \\) read-char
+   (identical? c \%) not-implemented
+   (identical? c \#) read-dispatch
+   :else nil))
 
 ;; omitted by design: var reader, eval reader
 (defn dispatch-macros [s]
-  (case s
-    "{" read-set
-    "<" (throwing-reader "Unreadable form")
-    "\"" read-regex
-    "!" read-comment
-    "_" read-discard
-    nil))
+  (cond
+   (identical? s "{") read-set
+   (identical? s "<") (throwing-reader "Unreadable form")
+   (identical? s "\"") read-regex
+   (identical? s"!") read-comment
+   (identical? s "_") read-discard
+   :else nil))
 
 (defn read
   "Reads the first object from a PushbackReader. Returns the object read.
@@ -396,7 +438,7 @@ nil if the end of stream has been reached")
   (let [r (push-back-reader s)]
     (read r true nil false)))
 
-  
+
 ;; read table
 
 (defn ^:private read-date

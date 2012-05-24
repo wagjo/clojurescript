@@ -688,7 +688,14 @@
   (let [fn? (and *cljs-static-fns*
                  (not (-> f :info :dynamic))
                  (-> f :info :fn-var))
-        js? (= (-> f :info :ns) 'js)
+        ns (-> f :info :ns)
+        js? (= ns 'js)
+        goog? (when ns
+                (or (= ns 'goog)
+                    (when-let [ns-str (str ns)]
+                      (= (get (string/split ns-str #"\.") 0 nil) "goog"))))
+        keyword? (and (= (-> f :op) :constant)
+                      (keyword? (-> f :form)))
         [f variadic-invoke]
         (if fn?
           (let [info (-> f :info)
@@ -718,13 +725,16 @@
           [f nil])]
     (emit-wrap env
       (cond
+       keyword?
+       (emits "(new cljs.core.Keyword(" f ")).call(" (comma-sep (cons "null" args)) ")")
+       
        variadic-invoke
        (let [mfa (:max-fixed-arity variadic-invoke)]
         (emits f "(" (comma-sep (take mfa args))
                (when-not (zero? mfa) ",")
                "cljs.core.array_seq([" (comma-sep (drop mfa args)) "], 0))"))
        
-       (or fn? js?)
+       (or fn? js? goog?)
        (emits f "(" (comma-sep args)  ")")
        
        :else
@@ -1373,8 +1383,10 @@
 (defn get-expander [sym env]
   (let [mvar
         (when-not (or (-> env :locals sym)        ;locals hide macros
-                      (and (-> env :ns :excludes sym)
-                           (not (-> env :ns :uses-macros sym))))
+                      (and (or (-> env :ns :excludes sym)
+                               (get-in @namespaces [(-> env :ns :name) :excludes sym]))
+                           (not (or (-> env :ns :uses-macros sym)
+                                    (get-in @namespaces [(-> env :ns :name) :uses-macros sym])))))
           (if-let [nstr (namespace sym)]
             (when-let [ns (cond
                            (= "clojure.core" nstr) (find-ns 'cljs.core)
@@ -1399,8 +1411,11 @@
           (let [opname (str op)]
             (cond
              (= (first opname) \.) (let [[target & args] (next form)]
-                                     (list* '. target (symbol (subs opname 1)) args))
-             (= (last opname) \.) (list* 'new (symbol (subs opname 0 (dec (count opname)))) (next form))
+                                     (with-meta (list* '. target (symbol (subs opname 1)) args)
+                                       (meta form)))
+             (= (last opname) \.) (with-meta
+                                    (list* 'new (symbol (subs opname 0 (dec (count opname)))) (next form))
+                                    (meta form))
              :else form))
           form)))))
 
