@@ -684,11 +684,14 @@
     (when (= :expr context) (emits "})()"))))
 
 (defmethod emit :invoke
-  [{:keys [f args env]}]
-  (let [fn? (and *cljs-static-fns*
-                 (not (-> f :info :dynamic))
-                 (-> f :info :fn-var))
-        ns (-> f :info :ns)
+  [{:keys [f args env] :as expr}]
+  (let [info (:info f)
+        fn? (and *cljs-static-fns*
+                 (not (:dynamic info))
+                 (:fn-var info))
+        opt-not? (and (= (:name-sym info) 'cljs.core/not)
+                      (= (infer-tag (first (:args expr))) 'boolean))
+        ns (:ns info)
         js? (= ns 'js)
         goog? (when ns
                 (or (= ns 'goog)
@@ -698,8 +701,7 @@
                       (keyword? (-> f :form)))
         [f variadic-invoke]
         (if fn?
-          (let [info (-> f :info)
-                arity (count args)
+          (let [arity (count args)
                 variadic? (:variadic info)
                 mps (:method-params info)
                 mfa (:max-fixed-arity info)]
@@ -725,6 +727,9 @@
           [f nil])]
     (emit-wrap env
       (cond
+       opt-not?
+       (emits "!(" (first args) ")")
+
        keyword?
        (emits "(new cljs.core.Keyword(" f ")).call(" (comma-sep (cons "null" args)) ")")
        
@@ -1113,7 +1118,13 @@
   (disallowing-recur
    (let [enve (assoc env :context :expr)
          ctorexpr (analyze enve ctor)
-         argexprs (vec (map #(analyze enve %) args))]
+         argexprs (vec (map #(analyze enve %) args))
+         known-num-fields (:num-fields (resolve-existing-var env ctor))
+         argc (count args)]
+     (when (and known-num-fields (not= known-num-fields argc))
+       (warning env
+         (str "WARNING: Wrong number of args (" argc ") passed to " ctor)))
+     
      {:env env :op :new :form form :ctor ctorexpr :args argexprs
       :children (into [ctorexpr] argexprs)})))
 
@@ -1220,7 +1231,9 @@
   (let [t (munge (:name (resolve-var (dissoc env :locals) tsym)))]
     (swap! namespaces update-in [(-> env :ns :name) :defs tsym]
            (fn [m]
-             (let [m (assoc (or m {}) :name t)]
+             (let [m (assoc (or m {})
+                       :name t
+                       :num-fields (count fields))]
                (if-let [line (:line env)]
                  (-> m
                      (assoc :file *cljs-file*)
