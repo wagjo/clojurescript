@@ -213,8 +213,8 @@
              (assoc (cljs.core.ObjMap. nil (array) (js-obj)) :foo 5)))
 
   (assert (= "\"asdf\"" (pr-str "asdf")))
-  (assert (= "[1 true {:a 2, :b 42} #<Array [3, 4]>]"
-             (pr-str [1 true {:a 2 :b 42} (array 3 4)])))
+  (assert (= "[1 true {:a 2, :b #\"x\\\"y\"} #<Array [3, 4]>]"
+             (pr-str [1 true {:a 2 :b #"x\"y"} (array 3 4)])))
 
   (assert (= "\"asdf\"\n" (prn-str "asdf")))
   (assert (= "[1 true {:a 2, :b 42} #<Array [3, 4]>]\n"
@@ -1315,15 +1315,6 @@
   (defrecord B [x])
   (assert (not= (A. nil) (B. nil)))
 
-  (assert (instance? js/Object 1))
-  (assert (instance? js/Number 1))
-  (assert (instance? js/Object "foo"))
-  (assert (instance? js/String "foo"))
-  (assert (instance? js/Object (array)))
-  (assert (instance? js/Array (array)))
-  (assert (instance? js/Object (fn [])))
-  (assert (instance? js/Function (fn [])))
-
   (defprotocol IFoo (foo [this]))
   (assert (= (meta (with-meta (reify IFoo (foo [this] :foo)) {:foo :bar}))
              {:foo :bar}))
@@ -1402,6 +1393,14 @@
     (assert (= (-find-first fv [1]) 1))
     (assert (identical? (fv 1) fv)))
 
+  (deftype DestructuringWithLocals [a]
+    IFindsFirst
+    (-find-first [_ [x y]]
+      [x y a]))
+
+  (let [t (DestructuringWithLocals. 1)]
+    (assert (= [2 3 1] (-find-first t [2 3]))))
+
   (let [x 1]
     (assert (= (case x 1 :one) :one)))
   (let [x 1]
@@ -1465,5 +1464,76 @@
   (assert (=  0 (compare (subvec [1 2 3] 1) (subvec [1 2 3] 1))))
   (assert (=  1 (compare (subvec [1 2 4] 1) (subvec [1 2 3] 1))))
 
+  ;; RSeq
+
+  (assert (= '(3 2 1) (reverse (seq (array 1 2 3)))))
+  (assert (= '(3 2 1) (reverse [1 2 3])))
+  (assert (= '(4 3 2 1) (cons 4 (reverse [1 2 3]))))
+  (assert (= 6 (reduce + (reverse [1 2 3]))))
+  (assert (= '(4 3 2) (map inc (reverse [1 2 3]))))
+  (assert (= '(4 2) (filter even? (reverse [1 2 3 4]))))
+
+  ;; Chunked Sequences
+
+  (assert (= 6 (reduce + (array-chunk (array 1 2 3)))))
+  (assert (instance? ChunkedSeq (seq [1 2 3])))
+  (assert (= '(1 2 3) (seq [1 2 3])))
+  (assert (= '(2 3 4) (map inc [1 2 3])))
+  (assert (= '(2) (filter even? [1 2 3])))
+  (assert (= '(1 3) (filter odd? [1 2 3])))
+  (assert (= '(1 2 3) (concat [1] [2] [3])))
+
+  ;; INext
+
+  (assert (= nil (next nil)))
+  (assert (= nil (next (seq (array 1)))))
+  (assert (= '(2 3) (next (seq (array 1 2 3)))))
+  (assert (= nil (next (reverse (seq (array 1))))))
+  (assert (= '(2 1) (next (reverse (seq (array 1 2 3))))))
+  (assert (= nil (next (cons 1 nil))))
+  (assert (= '(2 3) (next (cons 1 (cons 2 (cons 3 nil))))))
+  (assert (= nil (next (lazy-seq (cons 1 nil)))))
+  (assert (= '(2 3) (next (lazy-seq
+                             (cons 1
+                               (lazy-seq
+                                 (cons 2
+                                   (lazy-seq (cons 3 nil)))))))))
+  (assert (= nil (next (list 1))))
+  (assert (= '(2 3) (next (list 1 2 3))))
+  (assert (= nil (next [1])))
+  (assert (= '(2 3) (next [1 2 3])))
+  (assert (= nil (next (range 1 2))))
+  (assert (= '(2 3) (next (range 1 4))))
+
+  ;; UUID
+
+  (assert (= (UUID. "550e8400-e29b-41d4-a716-446655440000")
+             (UUID. "550e8400-e29b-41d4-a716-446655440000")))
+
+  (assert (not (identical? (UUID. "550e8400-e29b-41d4-a716-446655440000")
+                           (UUID. "550e8400-e29b-41d4-a716-446655440000"))))
+
+  (assert (= 42 (get {(UUID. "550e8400-e29b-41d4-a716-446655440000") 42}
+                     (UUID. "550e8400-e29b-41d4-a716-446655440000")
+                     :not-at-all-found)))
+
+  (assert (= :not-at-all-found
+             (get {(UUID. "550e8400-e29b-41d4-a716-446655440000") 42}
+                  (UUID. "666e8400-e29b-41d4-a716-446655440000")
+                  :not-at-all-found)))
+
+  ;; Reader literals
+  (assert (= #queue [1]      (into cljs.core.PersistentQueue/EMPTY [1])))
+  (assert (not= #queue [1 2] (into cljs.core.PersistentQueue/EMPTY [1])))
+
+  (assert (= #inst "2010-11-12T18:14:15.666-00:00"
+             #inst "2010-11-12T13:14:15.666-05:00"))
+
+  (assert (= #uuid "550e8400-e29b-41d4-a716-446655440000"
+             #uuid "550e8400-e29b-41d4-a716-446655440000"))
+
+  (assert (= 42
+             (get {#uuid "550e8400-e29b-41d4-a716-446655440000" 42}
+                  #uuid "550e8400-e29b-41d4-a716-446655440000")))
   :ok
   )

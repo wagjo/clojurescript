@@ -46,7 +46,7 @@
 (def fast-path-protocols
   "protocol fqn -> [partition number, bit]"
   (zipmap (map #(symbol (core/str "cljs.core." %))
-               '[IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq
+               '[IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext
                  ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref
                  IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash
                  ISeqable ISequential IList IRecord IReversible ISorted IPrintable
@@ -244,7 +244,7 @@
 ;; internal
 (defmacro caching-hash [coll hash-fn hash-key]
   `(let [h# ~hash-key]
-     (if (coercive-not= h# nil)
+     (if-not (nil? h#)
        h#
        (let [h# (~hash-fn ~coll)]
          (set! ~hash-key h#)
@@ -304,18 +304,20 @@
 
 (defmacro reify [& impls]
   (let [t      (gensym "t")
+        meta-sym (gensym "meta")
+        this-sym (gensym "_")
         locals (keys (:locals &env))
         ns     (-> &env :ns :name)
         munge  cljs.compiler/munge
         ns-t   (list 'js* (core/str (munge ns) "." (munge t)))]
     `(do
        (when (undefined? ~ns-t)
-         (deftype ~t [~@locals __meta#]
-           cljs.core.IWithMeta
-           (~'-with-meta [_# __meta#]
-             (new ~t ~@locals __meta#))
-           cljs.core.IMeta
-           (~'-meta [_#] __meta#)
+         (deftype ~t [~@locals ~meta-sym]
+           IWithMeta
+           (~'-with-meta [~this-sym ~meta-sym]
+             (new ~t ~@locals ~meta-sym))
+           IMeta
+           (~'-meta [~this-sym] ~meta-sym)
            ~@impls))
        (new ~t ~@locals nil))))
 
@@ -333,55 +335,69 @@
                    (if (seq s)
                      (recur (assoc ret (first s) (take-while seq? (next s)))
                             (drop-while seq? (next s)))
-                     ret))]
+                     ret))
+        warn-if-not-protocol #(when-not (= 'Object %)
+                                (if cljs.compiler/*cljs-warn-on-undeclared*
+                                  (if-let [var (cljs.compiler/resolve-existing-var (dissoc &env :locals) %)]
+                                    (when-not (:protocol-symbol var)
+                                      (cljs.compiler/warning &env
+                                        (core/str "WARNING: Symbol " % " is not a protocol")))
+                                    (cljs.compiler/warning &env
+                                      (core/str "WARNING: Can't resolve protocol symbol " %)))))
+        skip-flag (set (-> tsym meta :skip-protocol-flag))]
     (if (base-type tsym)
       (let [t (base-type tsym)
             assign-impls (fn [[p sigs]]
+                           (warn-if-not-protocol p)
                            (let [psym (resolve p)
                                  pfn-prefix (subs (core/str psym) 0 (clojure.core/inc (.lastIndexOf (core/str psym) ".")))]
                              (cons `(aset ~psym ~t true)
-                                   (map (fn [[f & meths]]
-                                          `(aset ~(symbol (core/str pfn-prefix f)) ~t (fn ~@meths)))
+                                   (map (fn [[f & meths :as form]]
+                                          `(aset ~(symbol (core/str pfn-prefix f)) ~t ~(with-meta `(fn ~@meths) (meta form))))
                                         sigs))))]
         `(do ~@(mapcat assign-impls impl-map)))
       (let [t (resolve tsym)
             prototype-prefix (core/str t ".prototype.")
             assign-impls (fn [[p sigs]]
+                           (warn-if-not-protocol p)
                            (let [psym (resolve p)
                                  pprefix (protocol-prefix psym)]
                              (if (= p 'Object)
                                (let [adapt-params (fn [[sig & body]]
                                                     (let [[tname & args] sig]
-                                                      (list (with-meta (vec args) (meta sig))
-                                                            (list* 'this-as tname body))))]
-                                 (map (fn [[f & meths]]
-                                        `(set! ~(symbol (core/str prototype-prefix f)) (fn ~@(map adapt-params meths))))
+                                                      (list (vec args) (list* 'this-as tname body))))]
+                                 (map (fn [[f & meths :as form]]
+                                        `(set! ~(symbol (core/str prototype-prefix f))
+                                               ~(with-meta `(fn ~@(map adapt-params meths)) (meta form))))
                                       sigs))
-                               (cons `(set! ~(symbol (core/str prototype-prefix pprefix)) true)
-                                     (mapcat (fn [[f & meths]]
-                                               (if (= psym 'cljs.core.IFn)
-                                                 (let [adapt-params (fn [[[targ & args :as sig] & body]]
-                                                                      (let [tsym (gensym "tsym")]
-                                                                        `(~(with-meta (vec (cons tsym args)) (meta sig))
-                                                                          (this-as ~tsym
-                                                                                   (let [~targ ~tsym]
-                                                                                     ~@body)))))
-                                                       meths (map adapt-params meths)
-                                                       tsym (gensym "tsym")
-                                                       argsym (gensym "args")]
-                                                    [`(set! ~(symbol (core/str prototype-prefix 'call)) (fn ~@meths))
-                                                     `(set! ~(symbol (core/str prototype-prefix 'apply))
-                                                            (fn ~(with-meta [tsym argsym] (meta (first meths)))
-                                                              (.apply (.-call ~tsym) ~tsym
-                                                                      (.concat (array ~tsym) (aclone ~argsym)))))])
-                                                 (let [pf (core/str prototype-prefix pprefix f)]
-                                                   (if (vector? (first meths))
-                                                     [`(set! ~(symbol (core/str pf "$arity$" (count (first meths)))) (fn ~@meths))]
-                                                     (map (fn [[sig & body :as meth]]
-                                                            `(set! ~(symbol (core/str pf "$arity$" (count sig)))
-                                                                   (fn ~meth)))
-                                                          meths)))))
-                                             sigs)))))]
+                               (concat (when-not (skip-flag psym)
+                                         [`(set! ~(symbol (core/str prototype-prefix pprefix)) true)])
+                                       (mapcat (fn [[f & meths :as form]]
+                                                 (if (= psym 'cljs.core.IFn)
+                                                   (let [adapt-params (fn [[[targ & args :as sig] & body]]
+                                                                        (let [tsym (gensym "tsym")]
+                                                                          `(~(vec (cons tsym args))
+                                                                            (this-as ~tsym
+                                                                              (let [~targ ~tsym]
+                                                                                ~@body)))))
+                                                         meths (map adapt-params meths)
+                                                         tsym (gensym "tsym")
+                                                         argsym (gensym "args")]
+                                                     [`(set! ~(symbol (core/str prototype-prefix 'call)) ~(with-meta `(fn ~@meths) (meta form)))
+                                                      `(set! ~(symbol (core/str prototype-prefix 'apply))
+                                                             ~(with-meta
+                                                                `(fn ~[tsym argsym]
+                                                                   (.apply (.-call ~tsym) ~tsym
+                                                                           (.concat (array ~tsym) (aclone ~argsym))))
+                                                                (meta form)))])
+                                                   (let [pf (core/str prototype-prefix pprefix f)]
+                                                     (if (vector? (first meths))
+                                                       [`(set! ~(symbol (core/str pf "$arity$" (count (first meths)))) ~(with-meta `(fn ~@meths) (meta form)))]
+                                                       (map (fn [[sig & body :as meth]]
+                                                              `(set! ~(symbol (core/str pf "$arity$" (count sig)))
+                                                                     ~(with-meta `(fn ~meth) (meta form))))
+                                                            meths)))))
+                                               sigs)))))]
         `(do ~@(mapcat assign-impls impl-map))))))
 
 (defn- prepare-protocol-masks [env t impls]
@@ -396,21 +412,22 @@
     (if-let [fpp-pbs (seq (keep fast-path-protocols
                                 (map resolve
                                      (keys impl-map))))]
-      (let [fpp-partitions (group-by first fpp-pbs)
+      (let [fpps (into #{} (filter (partial contains? fast-path-protocols)
+                                   (map resolve
+                                        (keys impl-map))))
+            fpp-partitions (group-by first fpp-pbs)
             fpp-partitions (into {} (map (juxt key (comp (partial map peek) val))
                                          fpp-partitions))
             fpp-partitions (into {} (map (juxt key (comp (partial reduce core/bit-or) val))
                                          fpp-partitions))]
-        (reduce (fn [ps p]
-                  (update-in ps [p] (fnil identity 0)))
-                fpp-partitions
-                (range fast-path-protocol-partitions-count))))))
+        [fpps
+         (reduce (fn [ps p]
+                   (update-in ps [p] (fnil identity 0)))
+                 fpp-partitions
+                 (range fast-path-protocol-partitions-count))]))))
 
 (defmacro deftype [t fields & impls]
-  (let [adorn-params (fn [sig]
-                       (cons (vary-meta (second sig) assoc :cljs.compiler/fields fields)
-                             (nnext sig)))
-        ;;reshape for extend-type
+  (let [;;reshape for extend-type
         dt->et (fn [specs]
                  (loop [ret [] s specs]
                    (if (seq s)
@@ -418,19 +435,20 @@
                                 (conj (first s))
                                 (into
                                  (reduce (fn [v [f sigs]]
-                                           (conj v (cons f (map adorn-params sigs))))
+                                           (conj v (vary-meta (cons f (map #(cons (second %) (nnext %)) sigs))
+                                                              assoc :cljs.compiler/fields fields)))
                                          []
                                          (group-by first (take-while seq? (next s))))))
                             (drop-while seq? (next s)))
                      ret)))
         r (:name (cljs.compiler/resolve-var (dissoc &env :locals) t))
-        pmasks (prepare-protocol-masks &env t impls)]
+        [fpps pmasks] (prepare-protocol-masks &env t impls)]
     (if (seq impls)
       `(do
          (deftype* ~t ~fields ~pmasks)
          (set! (.-cljs$lang$type ~t) true)
          (set! (.-cljs$lang$ctorPrSeq ~t) (fn [this#] (list ~(core/str r))))
-         (extend-type ~t ~@(dt->et impls))
+         (extend-type ~(with-meta t {:skip-protocol-flag fpps}) ~@(dt->et impls))
          ~t)
       `(do
          (deftype* ~t ~fields ~pmasks)
@@ -444,11 +462,8 @@
   (let [hinted-fields fields
         fields (vec (map #(with-meta % nil) fields))
         base-fields fields
-	fields (conj fields '__meta '__extmap)
-        pmasks (prepare-protocol-masks env tagname impls)
-	adorn-params (fn [sig]
-                       (cons (vary-meta (second sig) assoc :cljs.compiler/fields fields)
-                             (nnext sig)))
+	fields (conj fields '__meta '__extmap (with-meta '__hash {:mutable true}))
+
         ;;reshape for extend-type
         dt->et (fn [specs]
                  (loop [ret [] s specs]
@@ -457,7 +472,8 @@
                                 (conj (first s))
                                 (into
                                  (reduce (fn [v [f sigs]]
-                                           (conj v (cons f (map adorn-params sigs))))
+                                           (conj v (vary-meta (cons f (map #(cons (second %) (nnext %)) sigs))
+                                                              assoc :cljs.compiler/fields fields)))
                                          []
                                          (group-by first (take-while seq? (next s))))))
                             (drop-while seq? (next s)))
@@ -468,7 +484,7 @@
 		 impls
 		 ['IRecord
 		  'IHash
-		  `(~'-hash [this#] (hash-coll this#))
+		  `(~'-hash [this#] (caching-hash this# ~'hash-imap ~'__hash))
 		  'IEquiv
 		  `(~'-equiv [this# other#]
         (if (and other#
@@ -500,14 +516,15 @@
 		  `(~'-assoc [this# k# ~gs]
                      (condp identical? k#
                        ~@(mapcat (fn [fld]
-                                   [(keyword fld) (list* `new tagname (replace {fld gs} fields))])
+                                   [(keyword fld) (list* `new tagname (replace {fld gs '__hash nil} fields))])
                                  base-fields)
-                       (new ~tagname ~@(remove #{'__extmap} fields) (assoc ~'__extmap k# ~gs))))
+                       (new ~tagname ~@(remove #{'__extmap '__hash} fields) (assoc ~'__extmap k# ~gs) nil)))
 		  'IMap
 		  `(~'-dissoc [this# k#] (if (contains? #{~@(map keyword base-fields)} k#)
                                             (dissoc (with-meta (into {} this#) ~'__meta) k#)
                                             (new ~tagname ~@(remove #{'__extmap} fields) 
-                                                 (not-empty (dissoc ~'__extmap k#)))))
+                                                 (not-empty (dissoc ~'__extmap k#))
+                                                 nil)))
 		  'ISeqable
 		  `(~'-seq [this#] (seq (concat [~@(map #(list `vector (keyword %) %) base-fields)] 
                                               ~'__extmap)))
@@ -518,10 +535,11 @@
 				 pr-pair# (core/str "#" ~(name rname) "{") ", " "}" opts#
 				 (concat [~@(map #(list `vector (keyword %) %) base-fields)] 
 					 ~'__extmap))))
-		  ])]
+		  ])
+          [fpps pmasks] (prepare-protocol-masks env tagname impls)]
       `(do
 	 (~'defrecord* ~tagname ~hinted-fields ~pmasks)
-	 (extend-type ~tagname ~@(dt->et impls))))))
+	 (extend-type ~(with-meta tagname {:skip-protocol-flag fpps}) ~@(dt->et impls))))))
 
 (defn- build-positional-factory
   [rsym rname fields]
@@ -552,6 +570,7 @@
 
 (defmacro defprotocol [psym & doc+methods]
   (let [p (:name (cljs.compiler/resolve-var (dissoc &env :locals) psym))
+        psym (vary-meta psym assoc :protocol-symbol true)
         ns-name (-> &env :ns :name)
         fqn (fn [n] (symbol (core/str ns-name "." n)))
         prefix (protocol-prefix p)
@@ -694,10 +713,12 @@
                         (if (seq? test)
                           (reduce #(assoc-test %1 %2 expr) m test)
                           (assoc-test m test expr)))
-                      {} (partition 2 clauses))]
-   `(cond
-     ~@(mapcat (fn [[m c]] `((cljs.core/= ~m ~e) ~c)) pairs)
-     :else ~default)))
+                      {} (partition 2 clauses))
+        esym (gensym)]
+   `(let [~esym ~e]
+      (cond
+        ~@(mapcat (fn [[m c]] `((cljs.core/= ~m ~esym) ~c)) pairs)
+        :else ~default))))
 
 (defmacro try
   "(try expr* catch-clause* finally-clause?)

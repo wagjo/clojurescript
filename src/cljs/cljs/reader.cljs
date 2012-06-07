@@ -72,9 +72,9 @@ nil if the end of stream has been reached")
   (throw (js/Error. (apply str msg))))
 
 (defn ^boolean macro-terminating? [ch]
-  (and (coercive-not= ch "#")
-       (coercive-not= ch \')
-       (coercive-not= ch ":")
+  (and (not (identical? ch "#"))
+       (not (identical? ch \'))
+       (not (identical? ch ":"))
        (macros ch)))
 
 (defn read-token
@@ -104,7 +104,7 @@ nil if the end of stream has been reached")
 (defn- re-find*
   [re s]
   (let [matches (.exec re s)]
-    (when (coercive-not= matches nil)
+    (when-not (nil? matches)
       (if (== (alength matches) 1)
         (aget matches 0)
         matches))))
@@ -113,9 +113,8 @@ nil if the end of stream has been reached")
   [s]
   (let [groups (re-find* int-pattern s)
         group3 (aget groups 2)]
-    (if (coercive-not
-         (or (nil? group3)
-             (< (alength group3) 1)))
+    (if-not (or (nil? group3)
+                (< (alength group3) 1))
       0
       (let [negate (if (identical? "-" (aget groups 1)) -1 1)
             a (cond
@@ -145,7 +144,7 @@ nil if the end of stream has been reached")
 (defn- re-matches*
   [re s]
   (let [matches (.exec re s)]
-    (when (and (coercive-not= matches nil)
+    (when (and (not (nil? matches))
                (identical? (aget matches 0) s))
       (if (== (alength matches) 1)
         (aget matches 0)
@@ -332,12 +331,12 @@ nil if the end of stream has been reached")
         token (aget a 0)
         ns (aget a 1)
         name (aget a 2)]
-    (if (or (and (coercive-not (undefined? ns))
+    (if (or (and (not (undefined? ns))
                  (identical? (. ns (substring (- (.-length ns) 2) (.-length ns))) ":/"))
             (identical? (aget name (dec (.-length name))) ":")
-            (coercive-not (== (.indexOf token "::" 1) -1)))
+            (not (== (.indexOf token "::" 1) -1)))
       (reader-error reader "Invalid token: " token)
-      (if (and (coercive-not= ns nil) (> (.-length ns) 0))
+      (if (and (not (nil? ns)) (> (.-length ns) 0))
         (keyword (.substring ns 0 (.indexOf ns "/")) name)
         (keyword token)))))
 
@@ -439,11 +438,76 @@ nil if the end of stream has been reached")
     (read r true nil false)))
 
 
-;; read table
+;; read instances
+
+(defn ^:private zero-fill-right [s width]
+  (cond (= width (count s)) s
+        (< width (count s)) (.substring s 0 width)
+        :else (loop [b (gstring/StringBuffer. s)]
+                (if (< (.getLength b) width)
+                  (recur (.append b \0))
+                  (.toString b)))))
+
+(defn ^:private divisible?
+  [num div]
+  (zero? (mod num div)))
+
+(defn ^:private indivisible?
+  [num div]
+    (not (divisible? num div)))
+
+(defn ^:private leap-year?
+  [year]
+  (and (divisible? year 4)
+       (or (indivisible? year 100)
+           (divisible? year 400))))
+
+(def ^:private days-in-month
+  (let [dim-norm [nil 31 28 31 30 31 30 31 31 30 31 30 31]
+        dim-leap [nil 31 29 31 30 31 30 31 31 30 31 30 31]]
+    (fn [month leap-year?]
+      (get (if leap-year? dim-leap dim-norm) month))))
+
+(def ^:private parse-and-validate-timestamp
+  (let [timestamp #"(\d\d\d\d)(?:-(\d\d)(?:-(\d\d)(?:[T](\d\d)(?::(\d\d)(?::(\d\d)(?:[.](\d+))?)?)?)?)?)?(?:[Z]|([-+])(\d\d):(\d\d))?"
+        check (fn [low n high msg]
+                (assert (<= low n high) (str msg " Failed:  " low "<=" n "<=" high))
+                n)]
+    (fn [ts]
+      (when-let [[[_ years months days hours minutes seconds milliseconds] [_ _ _] :as V]
+                 (->> ts
+                      (re-matches timestamp)
+                      (split-at 8)
+                      (map vec))]
+        (let [[[_ y mo d h m s ms] [offset-sign offset-hours offset-minutes]]
+              (->> V
+                   (map #(update-in %2 [0] %)
+                        [(constantly nil) #(if (= % "-") "-1" "1")])
+                   (map (fn [v] (map #(js/parseInt %) v))))
+              offset (* offset-sign (+ (* offset-hours 60) offset-minutes))]
+          [(if-not years 1970 y)
+           (if-not months 1        (check 1 mo 12 "timestamp month field must be in range 1..12"))
+           (if-not days 1          (check 1 d (days-in-month mo (leap-year? y)) "timestamp day field must be in range 1..last day in month"))
+           (if-not hours 0         (check 0 h 23 "timestamp hour field must be in range 0..23"))
+           (if-not minutes 0       (check 0 m 59 "timestamp minute field must be in range 0..59"))
+           (if-not seconds 0       (check 0 s (if (= m 59) 60 59) "timestamp second field must be in range 0..60"))
+           (if-not milliseconds 0  (check 0 ms 999 "timestamp millisecond field must be in range 0..999"))
+           offset])))))
+
+(defn parse-timestamp
+  [ts]
+  (if-let [[years months days hours minutes seconds ms offset]
+           (parse-and-validate-timestamp ts)]
+    (js/Date.
+     (- (.UTC js/Date years (dec months) days hours minutes seconds ms)
+        (* offset 60 1000)))
+    (reader-error nil (str "Unrecognized date/time syntax: " ts))))
 
 (defn ^:private read-date
-  [str]
-  (js/Date. (Date/parse str)))
+  [s]
+  (if (string? s)
+    (parse-timestamp s)
+    (reader-error nil "Instance literal expects a string for its timestamp.")))
 
 
 (defn ^:private read-queue
@@ -452,8 +516,15 @@ nil if the end of stream has been reached")
     (into cljs.core.PersistentQueue/EMPTY elems)
     (reader-error nil "Queue literal expects a vector for its elements.")))
 
-(def *tag-table* (atom {"inst"  identity
-                        "uuid"  identity
+
+(defn ^:private read-uuid
+  [uuid]
+  (if (string? uuid)
+    (UUID. uuid)
+    (reader-error nil "UUID literal expects a string as its representation.")))
+
+(def *tag-table* (atom {"inst"  read-date
+                        "uuid"  read-uuid
                         "queue" read-queue}))
 
 (defn maybe-read-tagged-type
