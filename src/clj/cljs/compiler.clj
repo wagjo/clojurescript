@@ -1217,8 +1217,11 @@
         :else {:env env :op :set! :form form :target targetexpr :val valexpr
                :children [targetexpr valexpr]})))))
 
+(defn munge-path [ss]
+  (clojure.lang.Compiler/munge (str ss)))
+
 (defn ns->relpath [s]
-  (str (string/replace (munge s) \. \/) ".cljs"))
+  (str (string/replace (munge-path s) \. \/) ".cljs"))
 
 (declare analyze-file)
 
@@ -1599,7 +1602,7 @@
   "Change the file extension from .cljs to .js. Takes a File or a
   String. Always returns a String."
   [file-str]
-  (clojure.string/replace file-str #".cljs$" ".js"))
+  (clojure.string/replace file-str #"\.cljs$" ".js"))
 
 (defn mkdirs
   "Create all parent directories for the passed file."
