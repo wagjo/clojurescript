@@ -1283,6 +1283,13 @@
   (assert (= {:foo 'bar} (meta (with-meta (A.) {:foo 'bar}))))
   (assert (= 'bar (:foo (assoc (A.) :foo 'bar))))
 
+  ;; ObjMap
+  (let [ks (map (partial str "foo") (range 500))
+        m  (apply obj-map (interleave ks (range 500)))]
+    (assert (instance? cljs.core.ObjMap m))
+    (assert (= 500 (count m)))
+    (assert (= 123 (m "foo123"))))
+
   ;; dot
   (let [s "abc"]
     (assert (= 3 (.-length s)))
@@ -1291,12 +1298,14 @@
     (assert (= 3 (. "abc" -length)))
     (assert (= "bc" (.substring s 1)))
     (assert (= "bc" (.substring "abc" 1)))
+    (assert (= "bc" ((memfn substring start) s 1)))
     (assert (= "bc" (. s substring 1)))
     (assert (= "bc" (. s (substring 1))))
     (assert (= "bc" (. s (substring 1 3))))
     (assert (= "bc" (.substring s 1 3)))
     (assert (= "ABC" (. s (toUpperCase))))
     (assert (= "ABC" (. "abc" (toUpperCase))))
+    (assert (= "ABC" ((memfn toUpperCase) s)))
     (assert (= "BC" (. (. s (toUpperCase)) substring 1)))
     (assert (= 2 (.-length (. (. s (toUpperCase)) substring 1)))))
 
