@@ -633,7 +633,7 @@
                   'IMap
                   `(~'-dissoc [this# k#] (if (contains? #{~@(map keyword base-fields)} k#)
                                            (dissoc (with-meta (into {} this#) ~'__meta) k#)
-                                           (new ~tagname ~@(remove #{'__extmap} fields) 
+                                           (new ~tagname ~@(remove #{'__extmap '__hash} fields) 
                                                 (not-empty (dissoc ~'__extmap k#))
                                                 nil)))
                   'ISeqable
@@ -643,7 +643,7 @@
                   `(~'-pr-seq [this# opts#]
                               (let [pr-pair# (fn [keyval#] (pr-sequential pr-seq "" " " "" opts# keyval#))]
                                 (pr-sequential
-                                 pr-pair# (core/str "#" ~(name rname) "{") ", " "}" opts#
+                                 pr-pair# (core/str "#" ~(core/str (namespace rname) "." (name rname)) "{") ", " "}" opts#
                                  (concat [~@(map #(list `vector (keyword %) %) base-fields)] 
                                          ~'__extmap))))
                   ])

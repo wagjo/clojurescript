@@ -1295,6 +1295,15 @@
   (assert (= {:foo 'bar} (meta (with-meta (A.) {:foo 'bar}))))
   (assert (= 'bar (:foo (assoc (A.) :foo 'bar))))
 
+  (defrecord C [a b c])
+  (def letters (C. "a" "b" "c"))
+  (assert (= (set (keys letters)) #{:a :b :c}))
+  (def more-letters (assoc letters :d "d" :e "e" :f "f"))
+  (assert (= (set (keys more-letters)) #{:a :b :c :d :e :f}))
+  (assert (= (set (keys (dissoc more-letters :d))) #{:a :b :c :e :f}))
+  (assert (= (set (keys (dissoc more-letters :d :e))) #{:a :b :c :f}))
+  (assert (= (set (keys (dissoc more-letters :d :e :f))) #{:a :b :c}))
+  
   ;; ObjMap
   (let [ks (map (partial str "foo") (range 500))
         m  (apply obj-map (interleave ks (range 500)))]
@@ -1496,6 +1505,7 @@
 
   ;; Chunked Sequences
 
+  (assert (= (hash (seq [1 2])) (hash (seq [1 2]))))
   (assert (= 6 (reduce + (array-chunk (array 1 2 3)))))
   (assert (instance? ChunkedSeq (seq [1 2 3])))
   (assert (= '(1 2 3) (seq [1 2 3])))
