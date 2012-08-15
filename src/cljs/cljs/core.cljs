@@ -1834,9 +1834,9 @@ reduces them without incurring seq initialization"
 
   IReduce
   (-reduce [coll f]
-    (ci-reduce coll f (aget arr off) (inc off)))
+    (array-reduce arr f (aget arr off) (inc off)))
   (-reduce [coll f start]
-    (ci-reduce coll f start off)))
+    (array-reduce arr f start off)))
 
 (defn array-chunk
   ([arr]
@@ -6177,12 +6177,15 @@ reduces them without incurring seq initialization"
   "Prints a sequence of objects using string-print, observing all
   the options given in opts"
   [objs opts]
-  (doseq [string (pr-seq (first objs) opts)]
-    (string-print string))
-  (doseq [obj (next objs)]
-    (string-print " ")
-    (doseq [string (pr-seq obj opts)]
-      (string-print string))))
+  (if (empty? objs)
+    (string-print "")
+    (do
+     (doseq [string (pr-seq (first objs) opts)]
+       (string-print string))
+     (doseq [obj (next objs)]
+       (string-print " ")
+       (doseq [string (pr-seq obj opts)]
+         (string-print string))))))
 
 (defn newline [opts]
   (string-print "\n")
