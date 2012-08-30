@@ -6954,52 +6954,96 @@ reduces them without incurring seq initialization"
   (-hash [this]
     (goog.string/hashCode (pr-str this))))
 
-;; WAGJO CUSTOM STUFF
+;;;; WAGJO CUSTOM STUFF
+
 (defn log
-  [& ss] (.log js/console (apply str (interpose \newline ss))))
+  "Prints messages to console, separated by newline."
+  [& messages]
+  (.log js/console (apply str (interpose \newline messages))))
 
-;; start chrome with --enable-benchmarking arg
-(def tracer (js/Array. 20))
-(def tracer-index (atom 0))
-(def ht (when (and (goog/isDef js/chrome) (goog/isDef chrome.Interval)) 
-          (chrome.Interval.)))
-(def tracer-started (atom false))
-
-(defn trace-reset
+(defn hires-now
+  "High resolution now(). Returns the number of milliseconds from the
+  start of navigation of the document."
   []
-  (doseq [x (range 20)]
-    (aset tracer x nil)))
+  (if (goog/isDef window.performance.webkitNow) 
+    (.webkitNow window.performance)
+    (.now window.performance)))
 
-(defn trace-start
-  [n]
-  (reset! tracer-index 0)
-  (reset! tracer-started n)
-  (when ht
-    (.start ht)))
+;;; High resolution tracer
 
-;; trace overhead is between 2 to 7 us
+(defprotocol ITracer
+  (-tracer-reset! [t]
+    "Resets tracer. Deletes stored measurements.")
+  (-tracer-start! [t checkpoint]
+    "Starts new measurement. Checkpoint determines number of
+     measurements, after report is printed into console.")
+  (-tracer-stop! [t]
+    "Finishes measurement. Prints report each time
+     checkpoint is reached.")
+  (-trace! [t label]
+    "Record time of a given trace, named by label."))
+
+(deftype Tracer [^:mutable base-time
+                 ^:mutable index ^:mutable checkpoint
+                 ^:mutable labels ^:mutable times]
+  ITracer
+  (-tracer-reset! [t]
+    (set! (.-base-time t) nil)
+    (set! (.-index t) nil)
+    (set! (.-checkpoint t) nil)
+    (set! (.-labels t) (array))
+    (set! (.-times t) (array)))
+  (-tracer-start! [t checkpoint]
+    (set! (.-base-time t) (hires-now))
+    (set! (.-index t) 0)
+    (set! (.-checkpoint t) checkpoint))
+  (-tracer-stop! [t]
+    (-trace! t nil)
+    (let [times (.-times t)]
+      (when (zero? (mod (count (aget times 0)) (.-checkpoint t)))
+        (let [get-avg #(let [ms (sort (seq (aget times %)))]
+                         (nth ms (/ (count ms) 2) 0))
+              t-to-str #(let [label (aget (.-labels t) %)
+                              pt (if (> % 0) (get-avg (dec %)) 0)]
+                          (str label (when label " ")
+                               "[" (.toFixed (- (get-avg %) pt) 3)
+                               "]"))
+              t-seq (map t-to-str (range (.-index t)))]
+          (log (str (apply str (interpose \newline t-seq))
+                    " (" (.toFixed (get-avg (dec (.-index t))) 3)
+                    ") on " (count (aget times 0))))))))
+  (-trace! [t label]
+    (let [index (.-index t)
+          times (.-times t)
+          current-times (or (aget times index) (array))]
+      (.push current-times (- (hires-now) (.-base-time t)))
+      (aset (.-labels t) index label)
+      (aset times index current-times)
+      (set! (.-index t) (inc index)))))
+
+(def global-tracer (Tracer. nil nil nil (array) (array)))
+
+(defn tracer-reset!
+  "Resets tracer. Deletes stored measurements."
+  []
+  (-tracer-reset! global-tracer))
+
+(defn tracer-start!
+  "Starts new measurement. Checkpoint determines number of
+   measurements, after which report is printed into console.
+   Without checkpoint, report is printed after each measurement."
+  ([]
+     (tracer-start! 1))
+  ([checkpoint]
+     (-tracer-start! global-tracer checkpoint)))
+
+(defn tracer-stop!
+  "Finishes measurement. Prints report each time
+   checkpoint is reached."
+  []
+  (-tracer-stop! global-tracer))
+
 (defn trace
-  [x]
-  (when @tracer-started
-    (let [i @tracer-index
-          p (or (second (aget tracer i)) [])
-          r [x (conj p (when ht (.microseconds ht)))]]
-      (aset tracer i r))
-    (swap! tracer-index inc)))
-
-(defn trace-stop
-  []
-  (when ht
-    (.stop ht))
-  (trace nil)
-  (when (= 0 (mod (count (second (aget tracer 0))) @tracer-started))
-    (let [get-avg #(let [ms (sort (second (aget tracer %)))]
-                     (nth ms (/ (count ms) 2) 0))
-          t-to-str #(let [[x _] (aget tracer %)
-                          pt (if (> % 0) (get-avg (dec %)) 0)]
-                      (str x (when x " ") "[" (/ (- (get-avg %) pt) 1000) "]"))]
-      (log (str (apply str (interpose \newline (map t-to-str
-                                                    (range @tracer-index))))
-                " (" (/ (get-avg (dec @tracer-index)) 1000)  ") on "
-                (count (second (aget tracer 0)))))))
-  (reset! tracer-started false))
+  "Record time of a given trace, named by label."
+  [label]
+  (-trace! global-tracer label))
