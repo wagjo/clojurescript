@@ -6978,34 +6978,22 @@ reduces them without incurring seq initialization"
 
 ;;; High resolution tracer
 
-(defprotocol ITracer
-  (-tracer-reset! [t]
-    "Resets tracer. Deletes stored measurements.")
-  (-tracer-start! [t checkpoint]
-    "Starts new measurement. Checkpoint determines number of
-     measurements, after report is printed into console.")
-  (-tracer-stop! [t]
-    "Finishes measurement. Prints report each time
-     checkpoint is reached.")
-  (-trace! [t label]
-    "Record time of a given trace, named by label."))
-
 (deftype Tracer [^:mutable base-time
                  ^:mutable index ^:mutable checkpoint
                  ^:mutable labels ^:mutable times]
-  ITracer
-  (-tracer-reset! [t]
+  Object
+  (tracer-reset! [t]
     (set! (.-base-time t) nil)
     (set! (.-index t) nil)
     (set! (.-checkpoint t) nil)
     (set! (.-labels t) (array))
     (set! (.-times t) (array)))
-  (-tracer-start! [t checkpoint]
+  (tracer-start! [t checkpoint]
     (set! (.-base-time t) (hires-now))
     (set! (.-index t) 0)
     (set! (.-checkpoint t) checkpoint))
-  (-tracer-stop! [t]
-    (-trace! t nil)
+  (tracer-stop! [t]
+    (.trace! t nil)
     (let [times (.-times t)]
       (when (zero? (mod (count (aget times 0)) (.-checkpoint t)))
         (let [get-avg #(let [ms (sort (seq (aget times %)))]
@@ -7019,7 +7007,7 @@ reduces them without incurring seq initialization"
           (log (str (apply str (interpose \newline t-seq))
                     " (" (.toFixed (get-avg (dec (.-index t))) 3)
                     ") on " (count (aget times 0))))))))
-  (-trace! [t label]
+  (trace! [t label]
     (let [index (.-index t)
           times (.-times t)
           current-times (or (aget times index) (array))]
@@ -7033,7 +7021,7 @@ reduces them without incurring seq initialization"
 (defn tracer-reset!
   "Resets tracer. Deletes stored measurements."
   []
-  (-tracer-reset! global-tracer))
+  (.tracer-reset! global-tracer))
 
 (defn tracer-start!
   "Starts new measurement. Checkpoint determines number of
@@ -7042,15 +7030,15 @@ reduces them without incurring seq initialization"
   ([]
      (tracer-start! 1))
   ([checkpoint]
-     (-tracer-start! global-tracer checkpoint)))
+     (.tracer-start! global-tracer checkpoint)))
 
 (defn tracer-stop!
   "Finishes measurement. Prints report each time
    checkpoint is reached."
   []
-  (-tracer-stop! global-tracer))
+  (.tracer-stop! global-tracer))
 
 (defn trace
   "Record time of a given trace, named by label."
   [label]
-  (-trace! global-tracer label))
+  (.trace! global-tracer label))
