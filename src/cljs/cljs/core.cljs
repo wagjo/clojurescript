@@ -35,12 +35,24 @@
   ^{:doc "bound in a repl thread to the third most recent value printed"}
   *3)
 
-(declare not nil? identical)
-
 (defn truth_
   "Internal - do not use!"
   [x]
   (js* "(~{x} != null && ~{x} !== false)"))
+
+(defn ^boolean identical?
+  "Tests if 2 arguments are the same object"
+  [x y]
+  (cljs.core/identical? x y))
+
+(defn ^boolean nil?
+  "Returns true if x is nil, false otherwise."
+  [x]
+  (coercive-= x nil))
+
+(defn ^boolean not
+  "Returns true if x is logical false, false otherwise."
+  [x] (if x false true))
 
 (set! *unchecked-if* true)
 (defn ^boolean type_satisfies_
@@ -295,12 +307,49 @@
   (-chunked-next [coll]))
 
 ;;;;;;;;;;;;;;;;;;; fundamentals ;;;;;;;;;;;;;;;
-(defn ^boolean identical?
-  "Tests if 2 arguments are the same object"
-  [x y]
-  (cljs.core/identical? x y))
 
-(declare first next)
+(defn ^seq seq
+  "Returns a seq on the collection. If the collection is
+  empty, returns nil.  (seq nil) returns nil. seq also works on
+  Strings."
+  [coll]
+  (when-not (nil? coll)
+    (if (satisfies? ASeq coll)
+      coll
+      (-seq coll))))
+
+(defn first
+  "Returns the first item in the collection. Calls seq on its
+  argument. If coll is nil, returns nil."
+  [coll]
+  (when-not (nil? coll)
+    (if (satisfies? ISeq coll)
+      (-first coll)
+      (let [s (seq coll)]
+        (when-not (nil? s)
+          (-first s))))))
+
+(defn ^seq rest
+  "Returns a possibly empty seq of the items after the first. Calls seq on its
+  argument."
+  [coll]
+  (if-not (nil? coll)
+    (if (satisfies? ISeq coll)
+      (-rest coll)
+      (let [s (seq coll)]
+        (if-not (nil? s)
+          (-rest s)
+          ())))
+    ()))
+
+(defn ^seq next
+  "Returns a seq of the items after the first. Calls seq on its
+  argument.  If there are no more items, returns nil"
+  [coll]
+  (when-not (nil? coll)
+    (if (satisfies? INext coll)
+      (-next coll)
+      (seq (rest coll)))))
 
 (defn ^boolean =
   "Equality. Returns true if x equals y, false if not. Compares
@@ -315,11 +364,6 @@
          (recur y (first more) (next more))
          (= y (first more)))
        false)))
-
-(defn ^boolean nil?
-  "Returns true if x is nil, false otherwise."
-  [x]
-  (coercive-= x nil))
 
 (defn type [x]
   (when-not (nil? x)
@@ -422,7 +466,21 @@
   "Returns a number one greater than num."
   [x] (cljs.core/+ x 1))
 
-(declare reduced? deref)
+(declare deref)
+
+(deftype Reduced [val]
+  IDeref
+  (-deref [o] val))
+
+(defn reduced
+  "Wraps x in a way such that a reduce will terminate with the value x"
+  [x]
+  (Reduced. x))
+
+(defn ^boolean reduced?
+  "Returns true if x is the result of a call to reduced"
+  [r]
+  (instance? Reduced r))
 
 (defn- ci-reduce
   "Accepts any collection which satisfies the ICount and IIndexed protocols and
@@ -488,7 +546,15 @@ reduces them without incurring seq initialization"
                (recur nval (inc n))))
            val)))))
 
-(declare hash-coll cons pr-str counted? RSeq)
+(declare hash-coll cons pr-str RSeq)
+
+(defn ^boolean counted?
+  "Returns true if coll implements count in constant time"
+  [x] (satisfies? ICounted x))
+
+(defn ^boolean indexed?
+  "Returns true if coll implements nth in constant time"
+  [x] (satisfies? IIndexed x))
 
 (deftype IndexedSeq [a i]
   Object
@@ -629,49 +695,6 @@ reduces them without incurring seq initialization"
   IHash
   (-hash [coll] (hash-coll coll)))
 
-(defn ^seq seq
-  "Returns a seq on the collection. If the collection is
-  empty, returns nil.  (seq nil) returns nil. seq also works on
-  Strings."
-  [coll]
-  (when-not (nil? coll)
-    (if (satisfies? ASeq coll)
-      coll
-      (-seq coll))))
-
-(defn first
-  "Returns the first item in the collection. Calls seq on its
-  argument. If coll is nil, returns nil."
-  [coll]
-  (when-not (nil? coll)
-    (if (satisfies? ISeq coll)
-      (-first coll)
-      (let [s (seq coll)]
-        (when-not (nil? s)
-          (-first s))))))
-
-(defn ^seq rest
-  "Returns a possibly empty seq of the items after the first. Calls seq on its
-  argument."
-  [coll]
-  (if-not (nil? coll)
-    (if (satisfies? ISeq coll)
-      (-rest coll)
-      (let [s (seq coll)]
-        (if-not (nil? s)
-          (-rest s)
-          ())))
-    ()))
-
-(defn ^seq next
-  "Returns a seq of the items after the first. Calls seq on its
-  argument.  If there are no more items, returns nil"
-  [coll]
-  (when-not (nil? coll)
-    (if (satisfies? INext coll)
-      (-next coll)
-      (seq (rest coll)))))
-
 (defn second
   "Same as (first (next x))"
   [coll]
@@ -709,10 +732,6 @@ reduces them without incurring seq initialization"
   IEquiv
   (-equiv [x o] (identical? x o)))
 
-(defn ^boolean not
-  "Returns true if x is logical false, false otherwise."
-  [x] (if x false true))
-
 (defn conj
   "conj[oin]. Returns a new collection with the xs
   'added'. (conj nil item) returns (item).  The 'addition' may
@@ -729,8 +748,6 @@ reduces them without incurring seq initialization"
   [coll]
   (-empty coll))
 
-(declare counted?)
-
 (defn- accumulating-seq-count [coll]
   (loop [s (seq coll) acc 0]
     (if (counted? s) ; assumes nil is counted, which it currently is
@@ -744,8 +761,6 @@ reduces them without incurring seq initialization"
   (if (counted? coll)
     (-count coll)
     (accumulating-seq-count coll)))
-
-(declare indexed?)
 
 (defn- linear-traversal-nth
   ([coll n]
@@ -906,14 +921,6 @@ reduces them without incurring seq initialization"
   "Returns true if coll satisfies ISequential"
   [x] (satisfies? ISequential x))
 
-(defn ^boolean counted?
-  "Returns true if coll implements count in constant time"
-  [x] (satisfies? ICounted x))
-
-(defn ^boolean indexed?
-  "Returns true if coll implements nth in constant time"
-  [x] (satisfies? IIndexed x))
-
 (defn ^boolean reduceable?
   "Returns true if coll satisfies IReduce"
   [x] (satisfies? IReduce x))
@@ -1037,7 +1044,7 @@ reduces them without incurring seq initialization"
 (defn find
   "Returns the map entry for key, or nil if key not present."
   [coll k]
-  (when (and coll
+  (when (and (not (nil? coll))
              (associative? coll)
              (contains? coll k))
     [k (-lookup coll k)]))
@@ -1105,6 +1112,7 @@ reduces them without incurring seq initialization"
             (if (f y x) 1 0)))))))
 
 (declare to-array)
+
 (defn sort
   "Returns a sorted sequence of the items in coll. Comp can be
    boolean-valued comparison funcion, or a -/0/+ valued comparator.
@@ -1181,20 +1189,6 @@ reduces them without incurring seq initialization"
   where the keys will be the ordinals."
   ([f init coll]
      (-kv-reduce coll f init)))
-
-(deftype Reduced [val]
-  IDeref
-  (-deref [o] val))
-
-(defn ^boolean reduced?
-  "Returns true if x is the result of a call to reduced"
-  [r]
-  (instance? Reduced r))
-
-(defn reduced
-  "Wraps x in a way such that a reduce will terminate with the value x"
-  [x]
-  (Reduced. x))
 
 ;;; Math - variadic forms will not work until the following implemented:
 ;;; first, next, reduce
@@ -1479,9 +1473,11 @@ reduces them without incurring seq initialization"
 
 (defn symbol
   "Returns a Symbol with the given namespace and name."
-  ([name] (cond (symbol? name) name
-                (keyword? name) (str* "\uFDD1" "'" (subs name 2)))
-     :else (str* "\uFDD1" "'" name))
+  ([name]
+     (cond
+      (symbol? name) name
+      (keyword? name) (str* "\uFDD1" "'" (subs name 2))
+      :else (str* "\uFDD1" "'" name)))
   ([ns name] (symbol (str* ns "/" name))))
 
 (defn keyword
@@ -2107,6 +2103,7 @@ reduces them without incurring seq initialization"
 ;; see core.clj
 (gen-apply-to)
 
+(set! *unchecked-if* true)
 (defn apply
   "Applies fn f to the argument list formed by prepending intervening arguments to args.
   First cut.  Not lazy.  Needs to use emitted toApply."
@@ -2154,6 +2151,7 @@ reduces them without incurring seq initialization"
             (apply-to f bc arglist)
             (.cljs$lang$applyTo f arglist)))
          (.apply f f (to-array arglist))))))
+(set! *unchecked-if* false)
 
 (defn vary-meta
  "Returns an object of the same type and value as obj, with
@@ -2907,9 +2905,7 @@ reduces them without incurring seq initialization"
              ret))))
 
 (declare tv-editable-root tv-editable-tail TransientVector deref
-         pr-sequential pr-sequential-writer pr-writer)
-
-(declare chunked-seq)
+         pr-sequential pr-sequential-writer pr-writer chunked-seq)
 
 (deftype PersistentVector [meta cnt shift root tail ^:mutable __hash]
   Object

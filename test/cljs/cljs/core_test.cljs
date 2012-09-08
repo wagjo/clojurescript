@@ -211,6 +211,9 @@
   (assert (= "hello:world" (str "hello" :world)))
   (assert (= ":helloworld" (str :hello 'world)))
 
+  ; symbol
+  (assert (= 'a (symbol 'a)))
+
   ;; format
   (assert (= "01: 2.000000" (format "%02d: %.6f" 1 2)))
 
@@ -1464,6 +1467,30 @@
                  [:a :b] :ok)
                :ok)))
 
+  (let [a 'a]
+    (assert (= (case a
+                 nil nil
+                 & :amp
+                 :none)
+               :none)))
+
+  (let [a '&]
+    (assert (= (case a
+                 nil nil
+                 & :amp
+                 :none)
+               :amp)))
+
+  (let [foo 'a]
+    (assert (= (case foo
+                 (a b c) :sym
+                 :none)
+               :sym))
+    (assert (= (case foo
+                 (b c d) :sym
+                 :none)
+               :none)))
+  
   ;; IComparable
   (assert (=  0 (compare false false)))
   (assert (= -1 (compare false true)))
