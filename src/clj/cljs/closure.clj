@@ -533,7 +533,7 @@
   [opts requires]
   (let [index (js-dependency-index opts)]
     (loop [requires requires
-           visited requires
+           visited (set requires)
            deps #{}]
       (if (seq requires)
         (let [node (get index (first requires))
@@ -878,14 +878,11 @@
               ana/*cljs-warn-on-undeclared*
               (true? (opts :warnings))]
       (let [compiled (-compile source all-opts)
-            compiled (concat
-                      (if (coll? compiled) compiled [compiled])
-                      (when (= :nodejs (:target all-opts))
-                        [(-compile (io/resource "cljs/nodejscli.cljs") all-opts)]))
-            js-sources (if (coll? compiled)
-                         (binding []
-                           (apply add-dependencies all-opts compiled))
-                         (add-dependencies all-opts compiled))
+            js-sources (concat
+                         (apply add-dependencies all-opts
+                            (if (coll? compiled) compiled [compiled]))
+                         (when (= :nodejs (:target all-opts))
+                           [(-compile (io/resource "cljs/nodejscli.cljs") all-opts)]))
             optim (:optimizations all-opts)]
         (if (and optim (not= optim :none))
           (->> js-sources
