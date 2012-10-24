@@ -76,7 +76,32 @@
                                                 (next bs)
                                                 seen-rest?))))
                              ret))))
-                     pmap
+                         plist
+                         (fn [bvec b val]
+                           (core/let [gvec (gensym "list__")]
+                                     (core/loop [ret (-> bvec (conj gvec) (conj val))
+                                                 n 0
+                                                 bs b]
+                                                (if (seq bs)
+                                                  (core/let [firstb (first bs)]
+                                                            (cond
+                                                             (= firstb :as) (pb ret (second bs) gvec)
+                                                             (= firstb :arity)
+                                                             (recur (pb ret (second bs) (list `.-arity gvec))
+                                                                    n
+                                                                    (next (next bs)))
+                                                             :else 
+                                                             (recur (pb ret firstb (cond
+                                                                                     (= n 0) (list `.-x1 gvec)
+                                                                                     (= n 1) (list `.-x2 gvec)
+                                                                                     (= n 2) (list `.-x3 gvec)
+                                                                                     (= n 3) (list `.-x4 gvec)
+                                                                                     (= n 4) (list `.-x5 gvec)
+                                                                                     (= n 5) (list `.-x6 gvec)))
+                                                                    (core/inc n)
+                                                                    (next bs))))
+                                                  ret))))
+                         pmap
                      (fn [bvec b v]
                        (core/let [gmap (gensym "map__")
                                   defaults (:or b)]
@@ -106,6 +131,7 @@
                       (symbol? b) (-> bvec (conj b) (conj v))
                       (vector? b) (pvec bvec b v)
                       (map? b) (pmap bvec b v)
+                      (list? b) (plist bvec b v)
                       :else (throw (new Exception (core/str "Unsupported binding form: " b))))))
          process-entry (fn [bvec b] (pb bvec (first b) (second b)))]
         (if (every? symbol? (map first bents))
