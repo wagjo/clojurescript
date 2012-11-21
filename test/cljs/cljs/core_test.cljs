@@ -156,6 +156,7 @@
   (assert (= (apply mod [4 2]) 0))
   (assert (= (mod 3 2) 1))
   (assert (= (apply mod [3 2]) 1))
+  (assert (= (mod -2 5) 3))
 
   (assert (= [4 3 2 1 0] (loop [i 0 j ()]
                  (if (< i 5)
@@ -246,6 +247,8 @@
 
   (assert (= "" (pr-str)))
   (assert (= "\n" (prn-str)))
+  (assert  (= "12" (with-out-str (print 1) (print 2))))
+  (assert  (= "12" (with-out-str (*print-fn* 1) (*print-fn* 2))))
 
   ;;this fails in v8 - why?
   ;(assert (= "symbol\"'string" (pr-str (str 'symbol \" \' "string"))))
@@ -679,6 +682,24 @@
                (js->clj (js* "[[{\"a\":1,\"b\":2}, {\"a\":1,\"b\":2}]]") :keywordize-keys true)))
   (assert (= [[{:a 1, :b 2} {:a 1, :b 2}]]
                (js->clj [[{:a 1, :b 2} {:a 1, :b 2}]])))
+
+  ;; clj->js
+  (assert (= (clj->js 'a) "a"))
+  (assert (= (clj->js :a) "a"))
+  (assert (= (clj->js "a") "a"))
+  (assert (= (clj->js 1) 1))
+  (assert (= (clj->js nil) (js* "null")))
+  (assert (= (clj->js true) (js* "true")))
+  (assert (goog/isArray (clj->js [])))
+  (assert (goog/isArray (clj->js #{})))
+  (assert (goog/isArray (clj->js '())))
+  (assert (goog/isObject (clj->js {})))
+  (assert (= (aget (clj->js {:a 1}) "a") 1))
+  (assert (= (-> (clj->js {:a {:b {{:k :ey} :d}}})
+                 (aget "a")
+                 (aget "b")
+                 (aget "{:k :ey}"))
+             "d"))
 
   ;; last
   (assert (= nil (last nil)))
@@ -1229,7 +1250,6 @@
     (assert (identical? cljs.core.PersistentTreeMap (type m1)))
     (assert (identical? cljs.core.PersistentTreeMap (type m2)))
     (assert (identical? compare (.-comp m1)))
-    (assert (identical? c2 (.-comp m2)))
     (assert (zero? (count m1)))
     (assert (zero? (count m2)))
     (let [m1 (assoc m1 :foo 1 :bar 2 :quux 3)
@@ -1271,16 +1291,17 @@
         c2 (comp - compare)
         s2 (sorted-set-by c2)
         c3 #(compare (quot %1 2) (quot %2 2))
-        s3 (sorted-set-by c3)]
+        s3 (sorted-set-by c3)
+        s4 (sorted-set-by <)]
     (assert (identical? cljs.core.PersistentTreeSet (type s1)))
     (assert (identical? cljs.core.PersistentTreeSet (type s2)))
     (assert (identical? compare (-comparator s1)))
-    (assert (identical? c2 (-comparator s2)))
     (assert (zero? (count s1)))
     (assert (zero? (count s2)))
     (let [s1 (conj s1 1 2 3)
           s2 (conj s2 1 2 3)
-          s3 (conj s3 1 2 3)]
+          s3 (conj s3 1 2 3 7 8 9)
+          s4 (conj s4 1 2 3)]
       (assert (= (hash s1) (hash s2)))
       (assert (= (hash s1) (hash #{1 2 3})))
       (assert (= (seq s1)  (list 1 2 3)))
@@ -1289,8 +1310,18 @@
       (assert (= (rseq s2) (list 1 2 3)))
       (assert (= (count s1) 3))
       (assert (= (count s2) 3))
-      (assert (= (count s3) 2))
+      (assert (= (count s3) 4))
       (assert (= (get s3 0) 1))
+      (assert (= (subseq s3 > 5) (list 7 8)))
+      (assert (= (subseq s3 > 6) (list 8)))
+      (assert (= (subseq s3 >= 6) (list 7 8)))
+      (assert (= (subseq s3 >= 12) nil))
+      (assert (= (subseq s3 < 0) (list)))
+      (assert (= (subseq s3 < 5) (list 1 2)))
+      (assert (= (subseq s3 < 6) (list 1 2)))
+      (assert (= (subseq s3 <= 6) (list 1 2 7)))
+      (assert (= (subseq s3 >= 2 <= 6) (list 2 7)))
+      (assert (= (subseq s4 >= 2 < 3) (list 2)))
       (let [s1 (disj s1 2)
             s2 (disj s2 2)]
         (assert (= (seq s1)  (list 1 3)))
@@ -1504,7 +1535,7 @@
                  (b c d) :sym
                  :none)
                :none)))
-  
+
   ;; IComparable
   (assert (=  0 (compare false false)))
   (assert (= -1 (compare false true)))
@@ -1640,6 +1671,7 @@
   (assert (= (pr-str true) "true"))
   (assert (= (pr-str false) "false"))
   (assert (= (pr-str "string") "\"string\""))
+  (assert (= (pr-str ["üñîçó∂£" :ทดสอบ/你好 'こんにちは]) "[\"üñîçó∂£\" :ทดสอบ/你好 こんにちは]"))
   (assert (= (pr-str "escape chars \t \r \n \\ \" \b \f") "\"escape chars \\t \\r \\n \\\\ \\\" \\b \\f\""))
 
   ;;; pr-str records
@@ -1673,6 +1705,37 @@
   (let [uuid-str "550e8400-e29b-41d4-a716-446655440000"
         uuid (UUID. uuid-str)]
     (assert (= (pr-str uuid) (str "#uuid \"" uuid-str "\""))))
+
+  ;; CLJS-405
+
+  (defprotocol IBar (-bar [this x]))
+
+  (defn baz [f]
+    (reify
+      IBar
+      (-bar [_ x]
+        (f x))))
+
+  (assert (= 2 (-bar (baz inc) 1)))
+
+  ;; CLJS-401 / CLJS-411
+
+  (let [x "original"]
+    (defn original-closure-stmt [] x))
+
+  (let [x "overwritten"]
+    (assert (= "original" (original-closure-stmt))))
+
+  (assert (= "original" (let [x "original"
+                              oce (fn [] x)
+                              x "overwritten"]
+                          (oce))))
+
+
+  (letfn [(x [] "original")
+          (y [] (x))]
+    (let [x (fn [] "overwritten")]
+      (assert (= "original" (y)))))
 
   :ok
   )

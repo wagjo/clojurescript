@@ -18,7 +18,7 @@
 (def
   ^{:doc "Each runtime environment provides a diffenent way to print output.
   Whatever function *print-fn* is bound to will be passed any
-  Strings which should be printed."}
+  Strings which should be printed." :dynamic true}
   *print-fn*
   (fn [_]
     (throw (js/Error. "No *print-fn* fn set for evaluation environment"))))
@@ -1311,15 +1311,20 @@ reduces them without incurring seq initialization"
   [x]
   (fix x))
 
+(defn js-mod
+  "Modulus of num and div with original javascript behavior. i.e. bug for negative numbers"
+  [n d]
+  (cljs.core/js-mod n d))
+
 (defn mod
   "Modulus of num and div. Truncates toward negative infinity."
   [n d]
-  (cljs.core/mod n d))
+  (js-mod (+ (js-mod n d) d) d))
 
 (defn quot
   "quot[ient] of dividing numerator by denominator."
   [n d]
-  (let [rem (mod n d)]
+  (let [rem (js-mod n d)]
     (fix (/ (- n rem) d))))
 
 (defn rem
@@ -1527,7 +1532,7 @@ reduces them without incurring seq initialization"
   (loop [h 0 s (seq m)]
     (if s
       (let [e (first s)]
-        (recur (mod (+ h (bit-xor (hash (key e)) (hash (val e))))
+        (recur (js-mod (+ h (bit-xor (hash (key e)) (hash (val e))))
                     4503599627370496)
                (next s)))
       h)))
@@ -1537,7 +1542,7 @@ reduces them without incurring seq initialization"
   (loop [h 0 s (seq s)]
     (if s
       (let [e (first s)]
-        (recur (mod (+ h (hash e)) 4503599627370496)
+        (recur (js-mod (+ h (hash e)) 4503599627370496)
                (next s)))
       h)))
 
@@ -5468,7 +5473,7 @@ reduces them without incurring seq initialization"
               :else      (if (pos? c)
                            (recur (conj stack t) (.-right t))
                            (recur stack          (.-left t)))))
-          (if (nil? stack)
+          (when-not (nil? stack)
             (PersistentTreeMapSeq. nil stack ascending? -1 nil))))))
 
   (-entry-key [coll entry] (key entry))
@@ -5519,7 +5524,7 @@ reduces them without incurring seq initialization"
   Returns a new sorted map with supplied mappings, using the supplied comparator."
   ([comparator & keyvals]
      (loop [in (seq keyvals)
-            out (cljs.core.PersistentTreeMap. comparator nil 0 nil 0)]
+            out (cljs.core.PersistentTreeMap. (fn->comparator comparator) nil 0 nil 0)]
        (if in
          (recur (nnext in) (assoc out (first in) (second in)))
          out))))
@@ -6232,7 +6237,7 @@ reduces them without incurring seq initialization"
               ;; handle CLJS ctors
               (and (not (nil? obj))
                    ^boolean (.-cljs$lang$type obj))
-                (.cljs$lang$ctorPrWriter obj writer opts)
+                (.cljs$lang$ctorPrWriter obj obj writer opts)
 
               ; Use the new, more efficient, IPrintWithWriter interface when possible.
               (satisfies? IPrintWithWriter obj) (-pr-writer obj writer opts)
@@ -6350,6 +6355,21 @@ reduces them without incurring seq initialization"
   [fmt & args]
   (print (apply format fmt args)))
 
+(def ^:private char-escapes {"\"" "\\\""
+                             "\\" "\\\\"
+                             "\b" "\\b"
+                             "\f" "\\f"
+                             "\n" "\\n"
+                             "\r" "\\r"
+                             "\t" "\\t"})
+
+(defn ^:private quote-string
+  [s]
+  (str \"
+       (.replace s (js/RegExp "[\\\\\"\b\f\n\r\t]" "g")
+         (fn [match] (get char-escapes match)))
+       \"))
+
 (extend-protocol ^:deprecation-nowarn IPrintable
   boolean
   (-pr-seq [bool opts] (list (str bool)))
@@ -6374,7 +6394,7 @@ reduces them without incurring seq initialization"
                   (str nspc "/"))
                 (name obj)))
      :else (list (if (:readably opts)
-                   (goog.string.quote obj)
+                   (quote-string obj)
                    obj))))
 
   function
@@ -6510,7 +6530,7 @@ reduces them without incurring seq initialization"
            (write-all writer (str nspc) "/"))
          (-write writer (name obj)))
      :else (if (:readably opts)
-             (-write writer (goog.string.quote obj))
+             (-write writer (quote-string obj))
              (-write writer obj))))
 
   function
@@ -6829,24 +6849,70 @@ reduces them without incurring seq initialization"
   [d]
   (-realized? d))
 
+(defprotocol IEncodeJS
+  (-clj->js [x] "Recursively transforms clj values to JavaScript")
+  (-key->js [x] "Transforms map keys to valid JavaScript keys. Arbitrary keys are
+  encoded to their string representation via (pr-str x)"))
+
+(extend-protocol IEncodeJS
+  default
+  (-key->js [k]
+    (if (or (string? k)
+            (number? k)
+            (keyword? k)
+            (symbol? k))
+      (-clj->js k)
+      (pr-str k)))
+
+  (-clj->js [x]
+    (cond
+      (keyword? x) (name x)
+      (symbol? x) (str x)
+      (map? x) (let [m (js-obj)]
+                 (doseq [[k v] x]
+                   (aset m (-key->js k) (-clj->js v)))
+                 m)
+      (coll? x) (apply array (map -clj->js x))
+      :else x))
+
+  nil
+  (-clj->js [x] nil))
+
+(defn clj->js
+   "Recursively transforms ClojureScript values to JavaScript.
+sets/vectors/lists become Arrays, Keywords and Symbol become Strings,
+Maps become Objects. Arbitrary keys are encoded to by key->js."
+   [x]
+   (-clj->js x))
+
+(defprotocol IEncodeClojure
+  (-js->clj [x] [x options] "Transforms JavaScript values to Clojure"))
+
+(extend-protocol IEncodeClojure
+  default
+  (-js->clj
+    ([x options]
+       (let [{:keys [keywordize-keys]} options
+             keyfn (if keywordize-keys keyword str)
+             f (fn thisfn [x]
+                 (cond
+                   (seq? x) (doall (map thisfn x))
+                   (coll? x) (into (empty x) (map thisfn x))
+                   (goog.isArray x) (vec (map thisfn x))
+                   (identical? (type x) js/Object) (into {} (for [k (js-keys x)]
+                                                              [(keyfn k)
+                                                               (thisfn (aget x k))]))
+                   :else x))]
+         (f x)))
+    ([x] (-js->clj x {:keywordize-keys false}))))
+
 (defn js->clj
   "Recursively transforms JavaScript arrays into ClojureScript
   vectors, and JavaScript objects into ClojureScript maps.  With
   option ':keywordize-keys true' will convert object fields from
   strings to keywords."
-  [x & options]
-  (let [{:keys [keywordize-keys]} options
-        keyfn (if keywordize-keys keyword str)
-        f (fn thisfn [x]
-            (cond
-             (seq? x) (doall (map thisfn x))
-             (coll? x) (into (empty x) (map thisfn x))
-             (goog.isArray x) (vec (map thisfn x))
-             (identical? (type x) js/Object) (into {} (for [k (js-keys x)]
-                                                        [(keyfn k)
-                                                         (thisfn (aget x k))]))
-             :else x))]
-    (f x)))
+  [x & opts]
+  (-js->clj x (apply array-map opts)))
 
 (defn memoize
   "Returns a memoized version of a referentially transparent function. The

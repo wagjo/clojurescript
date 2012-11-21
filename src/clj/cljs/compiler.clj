@@ -34,6 +34,7 @@
 
 (def ^:dynamic *position* nil)
 (def ^:dynamic *emitted-provides* nil)
+(def ^:dynamic *lexical-renames* {})
 (def cljs-reserved-file-names #{"deps.cljs"})
 
 (defonce ns-first-segments (atom '#{"cljs" "clojure"}))
@@ -49,12 +50,14 @@
                       shadow (recur (inc d) shadow)
                       (@ns-first-segments (str name)) (inc d)
                       :else d))
-            name (if field
-                   (str "self__." name)
-                   name)]
-        (if (zero? depth)
-          (munge name reserved)
-          (symbol (str (munge name reserved) "__$" depth))))
+            renamed (*lexical-renames* (System/identityHashCode s))
+            munged-name (munge (cond field (str "self__." name)
+                                     renamed renamed
+                                     :else name)
+                               reserved)]
+        (if (or field (zero? depth))
+          munged-name
+          (symbol (str munged-name "__$" depth))))
       ; String munging
       (let [ss (string/replace (str s) #"\/(.)" ".$1") ; Division is special
             ss (apply str (map #(if (reserved %) (str % "$") %)
@@ -123,6 +126,14 @@
     (swap! *position* (fn [[line column]]
                         [(inc line) 0])))
   nil)
+
+(defn ^String emit-str [expr]
+  (with-out-str (emit expr)))
+
+(defn emit-provide [sym]
+  (when-not (or (nil? *emitted-provides*) (contains? @*emitted-provides* sym))
+    (swap! *emitted-provides* conj sym)
+    (emitln "goog.provide('" (munge sym) "');")))
 
 (defmulti emit-constant class)
 (defmethod emit-constant nil [x] (emits "null"))
@@ -215,7 +226,8 @@
         n (if (= (namespace n) "js")
             (name n)
             info)]
-    (emit-wrap env (emits (munge n)))))
+    (when-not (= :statement (:context env))
+      (emit-wrap env (emits (munge n))))))
 
 (defmethod emit :meta
   [{:keys [expr meta env]}]
@@ -540,13 +552,18 @@
   [{:keys [bindings statements ret env loop]}]
   (let [context (:context env)]
     (when (= :expr context) (emits "(function (){"))
-    (doseq [{:keys [init] :as binding} bindings]
-      (emitln "var " (munge binding) " = " init ";"))
-    (when loop (emitln "while(true){"))
-    (emit-block (if (= :expr context) :return context) statements ret)
-    (when loop
-      (emitln "break;")
-      (emitln "}"))
+    (binding [*lexical-renames* (into *lexical-renames*
+                                      (when (= :statement context)
+                                        (map #(vector (System/identityHashCode %)
+                                                      (gensym (str (:name %) "-")))
+                                             bindings)))]
+      (doseq [{:keys [init] :as binding} bindings]
+        (emitln "var " (munge binding) " = " init ";"))
+      (when loop (emitln "while(true){"))
+      (emit-block (if (= :expr context) :return context) statements ret)
+      (when loop
+        (emitln "break;")
+        (emitln "}")))
     ;(emits "}")
     (when (= :expr context) (emits "})()"))))
 
@@ -675,10 +692,7 @@
 (defmethod emit :deftype*
   [{:keys [t fields pmasks]}]
   (let [fields (map munge fields)]
-    (when-not (or (nil? *emitted-provides*) (contains? @*emitted-provides* t))
-      (swap! *emitted-provides* conj t)
-      (emitln "")
-      (emitln "goog.provide('" (munge t) "');"))
+    (emit-provide t)
     (emitln "")
     (emitln "/**")
     (emitln "* @constructor")
@@ -693,10 +707,7 @@
 (defmethod emit :defrecord*
   [{:keys [t fields pmasks]}]
   (let [fields (concat (map munge fields) '[__meta __extmap])]
-    (when-not (or (nil? *emitted-provides*) (contains? @*emitted-provides* t))
-      (swap! *emitted-provides* conj t)
-      (emitln "")
-      (emitln "goog.provide('" (munge t) "');"))
+    (emit-provide t)
     (emitln "")
     (emitln "/**")
     (emitln "* @constructor")
@@ -797,6 +808,24 @@
   (or (not (.exists dest))
       (> (.lastModified src) (.lastModified dest))))
 
+(defn parse-ns [src dest]
+  (with-core-cljs
+    (binding [ana/*cljs-ns* 'cljs.user]
+      (loop [forms (forms-seq src)]
+        (if (seq forms)
+          (let [env (ana/empty-env)
+                ast (ana/analyze env (first forms))]
+            (if (= (:op ast) :ns)
+              (let [ns-name (:name ast)
+                    deps    (merge (:uses ast) (:requires ast))]
+                {:ns (or ns-name 'cljs.user)
+                 :provides [ns-name]
+                 :requires (if (= ns-name 'cljs.core)
+                             (set (vals deps))
+                             (conj (set (vals deps)) 'cljs.core))
+                 :file dest})
+              (recur (rest forms)))))))))
+
 (defn compile-file
   "Compiles src to a file of the same name, but with a .js extension,
    in the src file's directory.
@@ -820,7 +849,7 @@
          (if (requires-compilation? src-file dest-file)
            (do (mkdirs dest-file)
                (compile-file* src-file dest-file))
-           {:file dest-file})
+           (parse-ns src-file dest-file))
          (throw (java.io.FileNotFoundException. (str "The file " src " does not exist.")))))))
 
 (comment

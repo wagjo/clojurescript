@@ -161,12 +161,14 @@
 
 (defn repl
   "Note - repl will reload core.cljs every time, even if supplied old repl-env"
-  [repl-env & {:keys [verbose warn-on-undeclared special-fns]}]
+  [repl-env & {:keys [analyze-path verbose warn-on-undeclared special-fns]}]
   (prn "Type: " :cljs/quit " to quit")
   (binding [ana/*cljs-ns* 'cljs.user
             *cljs-verbose* verbose
             ana/*cljs-warn-on-undeclared* warn-on-undeclared]
-    (let [env {:context :statement :locals {}}
+    (when analyze-path
+      (analyze-source analyze-path))
+    (let [env {:context :expr :locals {}}
           special-fns (merge default-special-fns special-fns)
           is-special-fn? (set (keys special-fns))]
       (-setup repl-env)
@@ -185,4 +187,3 @@
            :else
            (do (eval-and-print repl-env env form) (recur)))))
       (-tear-down repl-env))))
-

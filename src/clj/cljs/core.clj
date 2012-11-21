@@ -316,7 +316,7 @@
   ([x y] (list 'js* "((~{} < ~{}) ? ~{} : ~{})" x y x y))
   ([x y & more] `(min (min ~x ~y) ~@more)))
 
-(defmacro mod [num div]
+(defmacro js-mod [num div]
   (list 'js* "(~{} % ~{})" num div))
 
 (defmacro bit-not [x]
@@ -607,14 +607,14 @@
          (deftype* ~t ~fields ~pmasks)
          (set! (.-cljs$lang$type ~t) true)
          (set! (.-cljs$lang$ctorPrSeq ~t) (fn [this#] (list ~(core/str r))))
-         (set! (.-cljs$lang$ctorPrWriter ~t) (fn [this# writer#] (-write writer# ~(core/str r))))
+         (set! (.-cljs$lang$ctorPrWriter ~t) (fn [this# writer# opt#] (-write writer# ~(core/str r))))
          (extend-type ~t ~@(dt->et t impls fields true))
          ~t)
       `(do
          (deftype* ~t ~fields ~pmasks)
          (set! (.-cljs$lang$type ~t) true)
          (set! (.-cljs$lang$ctorPrSeq ~t) (fn [this#] (list ~(core/str r))))
-         (set! (.-cljs$lang$ctorPrWriter ~t) (fn [this# writer#] (-write writer# ~(core/str r))))
+         (set! (.-cljs$lang$ctorPrWriter ~t) (fn [this# writer# opts#] (-write writer# ~(core/str r))))
          ~t))))
 
 (defn- emit-defrecord
@@ -1182,3 +1182,14 @@
            (~'f)
            ~(gen-apply-to-helper))))
      (set! ~'*unchecked-if* false)))
+
+(defmacro with-out-str
+  "Evaluates exprs in a context in which *print-fn* is bound to .append
+  on a fresh StringBuffer.  Returns the string created by any nested
+  printing calls."
+  [& body]
+  `(let [sb# (goog.string/StringBuffer.)]
+     (binding [cljs.core/*print-fn* (fn [x#] (.append sb# x#))]
+       ~@body)
+     (cljs.core/str sb#)))
+

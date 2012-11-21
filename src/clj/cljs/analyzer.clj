@@ -111,91 +111,64 @@
   (and (get (:defs (@namespaces 'cljs.core)) sym)
        (not (contains? (-> env :ns :excludes) sym))))
 
+(defn resolve-var
+  "Resolve a var. Accepts a side-effecting confirm fn for producing
+   warnings about unresolved vars."
+  ([env sym] (resolve-var env sym nil))
+  ([env sym confirm]
+     (if (= (namespace sym) "js")
+       {:name sym :ns 'js}
+       (let [s (str sym)
+             lb (-> env :locals sym)]
+         (cond
+           lb lb
+
+           (namespace sym)
+           (let [ns (namespace sym)
+                 ns (if (= "clojure.core" ns) "cljs.core" ns)
+                 full-ns (resolve-ns-alias env ns)]
+             (when confirm
+               (confirm env full-ns (symbol (name sym))))
+             (merge (get-in @namespaces [full-ns :defs (symbol (name sym))])
+                    {:name (symbol (str full-ns) (str (name sym)))
+                     :ns full-ns}))
+
+           (.contains s ".")
+           (let [idx (.indexOf s ".")
+                 prefix (symbol (subs s 0 idx))
+                 suffix (subs s (inc idx))
+                 lb (-> env :locals prefix)]
+             (if lb
+               {:name (symbol (str (:name lb) suffix))}
+               (do
+                 (when confirm
+                   (confirm env prefix (symbol suffix)))
+                 (merge (get-in @namespaces [prefix :defs (symbol suffix)])
+                        {:name (if (= "" prefix) (symbol suffix) (symbol (str prefix) suffix))
+                         :ns prefix}))))
+
+           (get-in @namespaces [(-> env :ns :name) :uses sym])
+           (let [full-ns (get-in @namespaces [(-> env :ns :name) :uses sym])]
+             (merge
+              (get-in @namespaces [full-ns :defs sym])
+              {:name (symbol (str full-ns) (str sym))
+               :ns (-> env :ns :name)}))
+
+           (get-in @namespaces [(-> env :ns :name) :imports sym])
+           (recur env (get-in @namespaces [(-> env :ns :name) :imports sym]) confirm)
+
+           :else
+           (let [full-ns (if (core-name? env sym)
+                           'cljs.core
+                           (-> env :ns :name))]
+             (when confirm
+               (confirm env full-ns sym))
+             (merge (get-in @namespaces [full-ns :defs sym])
+                    {:name (symbol (str full-ns) (str sym))
+                     :ns full-ns})))))))
+
 (defn resolve-existing-var [env sym]
-  (if (= (namespace sym) "js")
-    {:name sym :ns 'js}
-    (let [s (str sym)
-          lb (-> env :locals sym)]
-      (cond
-       lb lb
-
-       (namespace sym)
-       (let [ns (namespace sym)
-             ns (if (= "clojure.core" ns) "cljs.core" ns)
-             full-ns (resolve-ns-alias env ns)]
-         (confirm-var-exists env full-ns (symbol (name sym)))
-         (merge (get-in @namespaces [full-ns :defs (symbol (name sym))])
-           {:name (symbol (str full-ns) (str (name sym)))
-            :ns full-ns}))
-
-       (.contains s ".")
-       (let [idx (.indexOf s ".")
-             prefix (symbol (subs s 0 idx))
-             suffix (subs s (inc idx))
-             lb (-> env :locals prefix)]
-         (if lb
-           {:name (symbol (str (:name lb) suffix))}
-           (do
-             (confirm-var-exists env prefix (symbol suffix))
-             (merge (get-in @namespaces [prefix :defs (symbol suffix)])
-              {:name (if (= "" prefix) (symbol suffix) (symbol (str prefix) suffix))
-               :ns prefix}))))
-
-       (get-in @namespaces [(-> env :ns :name) :uses sym])
-       (let [full-ns (get-in @namespaces [(-> env :ns :name) :uses sym])]
-         (merge
-          (get-in @namespaces [full-ns :defs sym])
-          {:name (symbol (str full-ns) (str sym))
-           :ns (-> env :ns :name)}))
-
-       (get-in @namespaces [(-> env :ns :name) :imports sym])
-       (recur env (get-in @namespaces [(-> env :ns :name) :imports sym]))
-
-       :else
-       (let [full-ns (if (core-name? env sym)
-                       'cljs.core
-                       (-> env :ns :name))]
-         (confirm-var-exists env full-ns sym)
-         (merge (get-in @namespaces [full-ns :defs sym])
-           {:name (symbol (str full-ns) (str sym))
-            :ns full-ns}))))))
-
-(defn resolve-var [env sym]
-  (if (= (namespace sym) "js")
-    {:name sym}
-    (let [s (str sym)
-          lb (-> env :locals sym)]
-      (cond
-       lb lb
-
-       (namespace sym)
-       (let [ns (namespace sym)
-             ns (if (= "clojure.core" ns) "cljs.core" ns)]
-         {:name (symbol (str (resolve-ns-alias env ns)) (name sym))})
-
-       (.contains s ".")
-       (let [idx (.indexOf s ".")
-             prefix (symbol (subs s 0 idx))
-             suffix (subs s idx)
-             lb (-> env :locals prefix)]
-         (if lb
-           {:name (symbol (str (:name lb) suffix))}
-           {:name sym}))
-
-       (get-in @namespaces [(-> env :ns :name) :uses sym])
-       (let [full-ns (get-in @namespaces [(-> env :ns :name) :uses sym])]
-         (merge
-          (get-in @namespaces [full-ns :defs sym])
-          {:name (symbol (str full-ns) (name sym))}))
-
-       (get-in @namespaces [(-> env :ns :name) :imports sym])
-       (recur env (get-in @namespaces [(-> env :ns :name) :imports sym]))
-
-       :else
-       (let [ns (if (core-name? env sym)
-                  'cljs.core
-                  (-> env :ns :name))]
-         {:name (symbol (str ns) (name sym))})))))
+  (resolve-var env sym confirm-var-exists))
 
 (defn confirm-bindings [env names]
   (doseq [name names]
@@ -360,11 +333,11 @@
              (when export-as {:export export-as})
              (when init-expr {:children [init-expr]})))))
 
-(defn- analyze-fn-method [env locals meth type]
-  (let [param-names (first meth)
+(defn- analyze-fn-method [env locals form type]
+  (let [param-names (first form)
         variadic (boolean (some '#{&} param-names))
         param-names (vec (remove '#{&} param-names))
-        body (next meth)
+        body (next form)
         [locals params] (reduce (fn [[locals params] name]
                                   (let [param {:name name
                                                :tag (-> name meta :tag)
@@ -376,7 +349,7 @@
         block (binding [*recur-frames* (cons recur-frame *recur-frames*)]
                 (analyze-block (assoc env :context :return :locals locals) body))]
     (merge {:env env :variadic variadic :params params :max-fixed-arity fixed-arity
-            :type type :recurs @(:flag recur-frame)}
+            :type type :form form :recurs @(:flag recur-frame)}
            block)))
 
 (defmethod parse 'fn*
@@ -591,7 +564,7 @@
 
 (defn analyze-deps [deps]
   (doseq [dep deps]
-    (when-not (:defs (@namespaces dep))
+    (when-not (contains? @namespaces dep)
       (let [relpath (ns->relpath dep)]
         (when (io/resource relpath)
           (analyze-file relpath))))))
