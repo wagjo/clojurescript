@@ -128,6 +128,9 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;; core protocols ;;;;;;;;;;;;;
 
+(defprotocol Fn
+  "Marker protocol")
+
 (defprotocol IFn
   (-invoke
     [this]
@@ -455,6 +458,24 @@
   IHash
   (-hash [o]
     (if (identical? o true) 1 0)))
+
+(declare with-meta)
+
+(extend-type function
+  Fn
+
+  IMeta
+  (-meta [_] nil)
+
+  IWithMeta
+  (-with-meta [f meta]
+    (with-meta
+      (reify
+        Fn
+        IFn
+        (-invoke [_ & args]
+          (apply f args)))
+      meta)))
 
 (extend-type default
   IHash
@@ -1026,7 +1047,7 @@ reduces them without incurring seq initialization"
   (goog/isNumber n))
 
 (defn ^boolean fn? [f]
-  (goog/isFunction f))
+  (or ^boolean (goog/isFunction f) (satisfies? Fn f)))
 
 (defn ^boolean ifn? [f]
   (or (fn? f) (satisfies? IFn f)))
@@ -3157,13 +3178,15 @@ reduces them without incurring seq initialization"
   ([vec node i off meta]
      (ChunkedSeq. vec node i off meta nil)))
 
+(declare build-subvec)
+
 (deftype Subvec [meta v start end ^:mutable __hash]
   Object
   (toString [this]
     (pr-str this))
 
   IWithMeta
-  (-with-meta [coll meta] (Subvec. meta v start end __hash))
+  (-with-meta [coll meta] (build-subvec meta v start end __hash))
 
   IMeta
   (-meta [coll] meta)
@@ -3174,11 +3197,11 @@ reduces them without incurring seq initialization"
   (-pop [coll]
     (if (== start end)
       (throw (js/Error. "Can't pop empty vector"))
-      (Subvec. meta v start (dec end) nil)))
+      (build-subvec meta v start (dec end) nil)))
 
   ICollection
   (-conj [coll o]
-    (Subvec. meta (-assoc-n v end o) start (inc end) nil))
+    (build-subvec meta (-assoc-n v end o) start (inc end) nil))
 
   IEmptyableCollection
   (-empty [coll] (with-meta cljs.core.Vector/EMPTY meta))
@@ -3215,7 +3238,7 @@ reduces them without incurring seq initialization"
   IAssociative
   (-assoc [coll key val]
     (let [v-pos (+ start key)]
-      (Subvec. meta (-assoc v v-pos val)
+      (build-subvec meta (-assoc v v-pos val)
                start (max end (inc v-pos))
                nil)))
 
@@ -3234,6 +3257,15 @@ reduces them without incurring seq initialization"
   (-invoke [coll k not-found]
     (-lookup coll k not-found)))
 
+(defn- build-subvec [meta v start end __hash]
+  (let [c (count v)]
+       (when (or (neg? start)
+                 (neg? end)
+                 (> start c)
+                 (> end c))
+         (throw (js/Error. "Index out of bounds")))
+       (Subvec. meta v start end __hash)))
+
 (defn subvec
   "Returns a persistent vector of the items in vector from
   start (inclusive) to end (exclusive).  If end is not supplied,
@@ -3243,7 +3275,7 @@ reduces them without incurring seq initialization"
   ([v start]
      (subvec v start (count v)))
   ([v start end]
-     (Subvec. nil v start end nil)))
+     (build-subvec nil v start end nil)))
 
 (defn- tv-ensure-editable [edit node]
   (if (identical? edit (.-edit node))
@@ -3651,6 +3683,19 @@ reduces them without incurring seq initialization"
       true
       false))
 
+  IKVReduce
+  (-kv-reduce [coll f init]
+    (let [len (alength keys)]
+      (loop [keys (.sort keys obj-map-compare-keys)
+             init init]
+        (if (seq keys)
+          (let [k (first keys)
+                init (f init k (aget strobj k))]
+            (if (reduced? init)
+              @init
+              (recur (rest keys) init)))
+          init))))
+
   IMap
   (-dissoc [coll k]
     (if (and ^boolean (goog/isString k)
@@ -3909,7 +3954,8 @@ reduces them without incurring seq initialization"
           (let [init (f init (aget arr i) (aget arr (inc i)))]
             (if (reduced? init)
               @init
-              (recur (+ i 2) init)))))))
+              (recur (+ i 2) init)))
+          init))))
 
   IFn
   (-invoke [coll k]
