@@ -1201,7 +1201,7 @@
   expression."
   {:added "1.5"}
   [expr & clauses]
-  (assert (even? (count clauses)))
+  (clojure.core/assert (even? (count clauses)))
   (let [g (gensym)
         pstep (fn [[test step]] `(if ~test (-> ~g ~step) ~g))]
     `(let [~g ~expr
@@ -1216,7 +1216,7 @@
   expression."
   {:added "1.5"}
   [expr & clauses]
-  (assert (even? (count clauses)))
+  (clojure.core/assert (even? (count clauses)))
   (let [g (gensym)
         pstep (fn [[test step]] `(if ~test (->> ~g ~step) ~g))]
     `(let [~g ~expr
