@@ -56,6 +56,15 @@
 (def ^:dynamic *cljs-macros-is-classpath* true)
 (def  -cljs-macros-loaded (atom false))
 
+(defmacro no-warn [& body]
+  `(binding [*cljs-warn-on-undeclared* false
+             *cljs-warn-on-redef* false
+             *cljs-warn-on-dynamic* false
+             *cljs-warn-on-fn-var* false
+             *cljs-warn-fn-arity* false
+             *cljs-warn-fn-deprecated* false]
+     ~@body))
+
 (defn load-core []
   (when (not @-cljs-macros-loaded)
     (reset! -cljs-macros-loaded true)
@@ -221,16 +230,6 @@
                (keyword (-> env :ns :name name) (name sym))
                sym)})
 
-(defn analyze-block
-  "returns {:statements .. :ret ..}"
-  [env exprs]
-  (let [statements (disallowing-recur
-                     (seq (map #(analyze (assoc env :context :statement) %) (butlast exprs))))
-        ret (if (<= (count exprs) 1)
-              (analyze env (first exprs))
-              (analyze (assoc env :context (if (= :statement (:context env)) :statement :return)) (last exprs)))]
-    {:statements statements :ret ret}))
-
 (defmulti parse (fn [op & rest] op))
 
 (defmethod parse 'if
@@ -251,9 +250,6 @@
      :throw throw-expr
      :children [throw-expr]}))
 
-(defn- block-children [{:keys [statements ret] :as block}]
-  (when block (conj (vec statements) ret)))
-
 (defmethod parse 'try*
   [op env [_ & body :as form] name]
   (let [body (vec body)
@@ -262,9 +258,7 @@
         fblock (when (and (seq? tail) (= 'finally (first tail)))
                   (rest tail))
         finally (when fblock
-                  (analyze-block
-                   (assoc env :context :statement)
-                   fblock))
+                  (analyze (assoc env :context :statement) `(do ~@fblock)))
         body (if finally (pop body) body)
         tail (peek body)
         cblock (when (and (seq? tail)
@@ -276,18 +270,16 @@
                  (assoc locals name {:name name})
                  locals)
         catch (when cblock
-                (analyze-block (assoc catchenv :locals locals) (rest cblock)))
+                (analyze (assoc catchenv :locals locals) `(do ~@(rest cblock))))
         body (if name (pop body) body)
-        try (when body
-              (analyze-block (if (or name finally) catchenv env) body))]
+        try (analyze (if (or name finally) catchenv env) `(do ~@body))]
     (when name (assert (not (namespace name)) "Can't qualify symbol in catch"))
     {:env env :op :try* :form form
      :try try
      :finally finally
      :name name
      :catch catch
-     :children (vec (mapcat block-children
-                            [try catch finally]))}))
+     :children [try catch finally]}))
 
 (defmethod parse 'def
   [op env form name]
@@ -371,11 +363,10 @@
                                 [locals []] param-names)
         fixed-arity (count (if variadic (butlast params) params))
         recur-frame {:params params :flag (atom nil)}
-        block (binding [*recur-frames* (cons recur-frame *recur-frames*)]
-                (analyze-block (assoc env :context :return :locals locals) body))]
-    (merge {:env env :variadic variadic :params params :max-fixed-arity fixed-arity
-            :type type :form form :recurs @(:flag recur-frame)}
-           block)))
+        expr (binding [*recur-frames* (cons recur-frame *recur-frames*)]
+               (analyze (assoc env :context :return :locals locals) `(do ~@body)))]
+    {:env env :variadic variadic :params params :max-fixed-arity fixed-arity
+     :type type :form form :recurs @(:flag recur-frame) :expr expr}))
 
 (defmethod parse 'fn*
   [op env [_ & args :as form] name]
@@ -416,7 +407,7 @@
         methods (if name
                   ;; a second pass with knowledge of our function-ness/arity
                   ;; lets us optimize self calls
-                  (map #(analyze-fn-method menv locals % type) meths)
+                  (no-warn (doall (map #(analyze-fn-method menv locals % type) meths)))
                   methods)]
     ;;todo - validate unique arities, at most one variadic, variadic takes max required args
     {:env env :op :fn :form form :name name :methods methods :variadic variadic
@@ -425,8 +416,7 @@
      :max-fixed-arity max-fixed-arity
      :protocol-impl protocol-impl
      :protocol-inline protocol-inline
-     :children (vec (mapcat block-children
-                            methods))}))
+     :children (mapv :expr methods)}))
 
 (defmethod parse 'letfn*
   [op env [_ bindings & exprs :as form] name]
@@ -448,16 +438,20 @@
                         (let [env (assoc-in meth-env [:locals name] shadow)]
                           (assoc be :init (analyze env (n->fexpr name)))))
                       bes))
-        {:keys [statements ret]}
-        (analyze-block (assoc meth-env :context (if (= :expr context) :return context)) exprs)]
-    {:env env :op :letfn :bindings bes :statements statements :ret ret :form form
-     :children (into (vec (map :init bes))
-                     (conj (vec statements) ret))}))
+        expr (analyze (assoc meth-env :context (if (= :expr context) :return context)) `(do ~@exprs))]
+    {:env env :op :letfn :bindings bes :expr expr :form form
+     :children (conj (vec (map :init bes)) expr)}))
 
 (defmethod parse 'do
   [op env [_ & exprs :as form] _]
-  (let [block (analyze-block env exprs)]
-    (merge {:env env :op :do :form form :children (block-children block)} block)))
+  (let [statements (disallowing-recur
+                     (seq (map #(analyze (assoc env :context :statement) %) (butlast exprs))))
+        ret (if (<= (count exprs) 1)
+              (analyze env (first exprs))
+              (analyze (assoc env :context (if (= :statement (:context env)) :statement :return)) (last exprs)))]
+    {:env env :op :do :form form
+     :statements statements :ret ret
+     :children (conj (vec statements) ret)}))
 
 (defn analyze-let
   [encl-env [_ bindings & exprs :as form] is-loop]
@@ -471,7 +465,8 @@
            (if-let [[name init] (first bindings)]
              (do
                (assert (not (or (namespace name) (.contains (str name) "."))) (str "Invalid local name: " name))
-               (let [init-expr (analyze env init)
+               (let [init-expr (binding [*loop-lets* (cons {:params bes} (or *loop-lets* ()))]
+                                 (analyze env init))
                      be {:name name
                          :init init-expr
                          :tag (or (-> name meta :tag)
@@ -491,16 +486,15 @@
                         (next bindings))))
              [bes env])))
         recur-frame (when is-loop {:params bes :flag (atom nil)})
-        {:keys [statements ret]}
+        expr
         (binding [*recur-frames* (if recur-frame (cons recur-frame *recur-frames*) *recur-frames*)
                   *loop-lets* (cond
                                is-loop (or *loop-lets* ())
                                *loop-lets* (cons {:params bes} *loop-lets*))]
-          (analyze-block (assoc env :context (if (= :expr context) :return context)) exprs))]
-    {:env encl-env :op :let :loop is-loop
-     :bindings bes :statements statements :ret ret :form form
-     :children (into (vec (map :init bes))
-                     (conj (vec statements) ret))}))
+          (analyze (assoc env :context (if (= :expr context) :return context)) `(do ~@exprs)))]
+    {:env encl-env :op (if is-loop :loop :let)
+     :bindings bes :expr expr :form form
+     :children (conj (vec (map :init bes)) expr)}))
 
 (defmethod parse 'let*
   [op encl-env form _]
@@ -596,6 +590,7 @@
 
 (defmethod parse 'ns
   [_ env [_ name & args :as form] _]
+  (assert (symbol? name) "Namespaces must be named by a symbol.")
   (let [docstring (if (string? (first args)) (first args) nil)
         args      (if docstring (next args) args)
         excludes
@@ -608,6 +603,7 @@
                     s))
                 #{} args)
         deps (atom #{})
+        aliases (atom {:fns #{} :macros #{}})
         valid-forms (atom #{:use :use-macros :require :require-macros :import})
         error-msg (fn [spec msg] (str msg "; offending spec: " (pr-str spec)))
         parse-require-spec (fn parse-require-spec [macros? spec]
@@ -629,6 +625,14 @@
                                (let [[lib & opts] spec
                                      {alias :as referred :refer :or {alias lib}} (apply hash-map opts)
                                      [rk uk] (if macros? [:require-macros :use-macros] [:require :use])]
+                                 (when alias
+                                   (let [alias-type (if macros? :macros :fns)]
+                                     (assert (not (contains? (alias-type @aliases)
+                                                             alias))
+                                             (error-msg spec ":as alias must be unique"))
+                                     (swap! aliases
+                                            update-in [alias-type]
+                                            conj alias)))
                                  (assert (or (symbol? alias) (nil? alias))
                                          (error-msg spec ":as must be followed by a symbol in :require / :require-macros"))
                                  (assert (or (and (sequential? referred) (every? symbol? referred))
