@@ -78,9 +78,9 @@
                                                 (next bs)
                                                 seen-rest?))))
                              ret))))
-                         plist
+                         ptuple
                          (fn [bvec b val]
-                           (core/let [gvec (gensym "list__")]
+                           (core/let [gvec (gensym "tuple__")]
                                      (core/loop [ret (-> bvec (conj gvec) (conj val))
                                                  n 0
                                                  bs b]
@@ -89,17 +89,27 @@
                                                             (cond
                                                              (= firstb :as) (pb ret (second bs) gvec)
                                                              (= firstb :arity)
-                                                             (recur (pb ret (second bs) (list `.-arity gvec))
+                                                             (recur (pb ret (second bs)
+                                                                        #_(list `count gvec)
+                                                                        (list `.-arity gvec))
                                                                     n
                                                                     (next (next bs)))
                                                              :else 
-                                                             (recur (pb ret firstb (cond
-                                                                                     (= n 0) (list `.-x1 gvec)
-                                                                                     (= n 1) (list `.-x2 gvec)
-                                                                                     (= n 2) (list `.-x3 gvec)
-                                                                                     (= n 3) (list `.-x4 gvec)
-                                                                                     (= n 4) (list `.-x5 gvec)
-                                                                                     (= n 5) (list `.-x6 gvec)))
+                                                             (recur (pb ret firstb
+                                                                        #_(cond
+                                                                         (= n 0) (list `nth gvec 0)
+                                                                         (= n 1) (list `nth gvec 1)
+                                                                         (= n 2) (list `nth gvec 2)
+                                                                         (= n 3) (list `nth gvec 3)
+                                                                         (= n 4) (list `nth gvec 4)
+                                                                         (= n 5) (list `nth gvec 5))
+                                                                        (cond
+                                                                         (= n 0) (list `.-x1 gvec)
+                                                                         (= n 1) (list `.-x2 gvec)
+                                                                         (= n 2) (list `.-x3 gvec)
+                                                                         (= n 3) (list `.-x4 gvec)
+                                                                         (= n 4) (list `.-x5 gvec)
+                                                                         (= n 5) (list `.-x6 gvec)))
                                                                     (core/inc n)
                                                                     (next bs))))
                                                   ret))))
@@ -129,17 +139,16 @@
                                                    (list `get gmap bk)))
                                       (next bes)))
                              ret))))]
-                    (cond
-                      (symbol? b) (-> bvec (conj b) (conj v))
-                      (and (vector? b)
-                           (:reader-tuple (meta b))) (plist bvec b v)
-                      (vector? b) (pvec bvec b v)
-                      (map? b) (pmap bvec b v)
-                      (list? b) (plist bvec b v)
-                      :else (throw (new Exception (core/str "Unsupported binding form: " b))))))
-         process-entry (fn [bvec b] (pb bvec (first b) (second b)))]
-        (if (every? symbol? (map first bents))
-          bindings
+                (cond
+                 (symbol? b) (-> bvec (conj b) (conj v))
+                 (and (vector? b)
+                      (:reader-tuple (meta b))) (ptuple bvec b v)
+                 (vector? b) (pvec bvec b v)
+                 (map? b) (pmap bvec b v)
+                 :else (throw (new Exception (core/str "Unsupported binding form: " b))))))
+             process-entry (fn [bvec b] (pb bvec (first b) (second b)))]
+    (if (every? symbol? (map first bents))
+      bindings
           (reduce process-entry [] bents))))
 
 (defmacro let

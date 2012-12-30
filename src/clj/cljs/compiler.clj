@@ -269,6 +269,8 @@
   (emit-wrap env
     (if (empty? items)
       (emits "cljs.core.PersistentVector.EMPTY")
+      #_(emits "cljs.core.PersistentVector.fromArray(["
+               (comma-sep items) "], true)")
       (if (:reader-tuple (meta form))
         (emits "(new cljs.core.Tuple(" (str (count items)) ", "
                (comma-sep items)

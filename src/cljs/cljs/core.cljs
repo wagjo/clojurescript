@@ -7361,10 +7361,10 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
     (-write wr (str "[" arity
                     " " x1 " " x2 " " x3 " " x4  " " x5 " " x6 "]")))
   IHash
-  (-hash [o]
+  (-hash [_]
     (hash [:tuple arity x1 x2 x3 x4 x5 x6]))
   IEquiv
-  (-equiv [o other] (and (instance? Tuple other)
+  (-equiv [_ other] (and (instance? Tuple other)
                          (= arity (.-arity other))
                          (= x1 (.-x1 other))
                          (= x2 (.-x2 other))
