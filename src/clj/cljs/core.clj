@@ -20,7 +20,8 @@
                             aget aset
                             + - * / < <= > >= == zero? pos? neg? inc dec max min mod
                             bit-and bit-and-not bit-clear bit-flip bit-not bit-or bit-set
-                            bit-test bit-shift-left bit-shift-right bit-xor])
+                            bit-test bit-shift-left bit-shift-right bit-xor
+                            cond-> cond->> as-> some-> some->>])
   (:require clojure.walk))
 
 (alias 'core 'clojure.core)
@@ -41,7 +42,8 @@
   extend-protocol fn for
   if-let if-not letfn
   memfn or
-  when when-first when-let when-not while])
+  when when-first when-let when-not while
+  cond-> cond->> as-> some-> some->>])
 
 (defmacro ^{:private true} assert-args [fnname & pairs]
   `(do (when-not ~(first pairs)
@@ -129,6 +131,8 @@
                              ret))))]
                     (cond
                       (symbol? b) (-> bvec (conj b) (conj v))
+                      (and (vector? b)
+                           (:reader-tuple (meta b))) (plist bvec b v)
                       (vector? b) (pvec bvec b v)
                       (map? b) (pmap bvec b v)
                       (list? b) (plist bvec b v)
@@ -1192,65 +1196,3 @@
      (binding [cljs.core/*print-fn* (fn [x#] (.append sb# x#))]
        ~@body)
      (cljs.core/str sb#)))
-
-(defmacro cond->
-  "Takes an expression and a set of test/form pairs. Threads expr
-  (via ->) through each form for which the corresponding test
-  expression is true. Note that, unlike cond branching, cond->
-  threading does not short circuit after the first true test
-  expression."
-  {:added "1.5"}
-  [expr & clauses]
-  (clojure.core/assert (even? (count clauses)))
-  (let [g (gensym)
-        pstep (fn [[test step]] `(if ~test (-> ~g ~step) ~g))]
-    `(let [~g ~expr
-           ~@(interleave (repeat g) (map pstep (partition 2 clauses)))]
-       ~g)))
-
-(defmacro cond->>
-  "Takes an expression and a set of test/form pairs. Threads expr
-  (via ->>) through each form for which the corresponding test
-  expression is true.  Note that, unlike cond branching, cond->>
-  threading does not short circuit after the first true test
-  expression."
-  {:added "1.5"}
-  [expr & clauses]
-  (clojure.core/assert (even? (count clauses)))
-  (let [g (gensym)
-        pstep (fn [[test step]] `(if ~test (->> ~g ~step) ~g))]
-    `(let [~g ~expr
-           ~@(interleave (repeat g) (map pstep (partition 2 clauses)))]
-       ~g)))
-
-(defmacro as->
-  "Binds name to expr, evaluates the first form in the lexical context
-  of that binding, then binds name to that result, repeating for each
-  successive form, returning the result of the last form."
-  {:added "1.5"}
-  [expr name & forms]
-  `(let [~name ~expr
-         ~@(interleave (repeat name) forms)]
-     ~name))
-
-(defmacro some->
-  "When expr is not nil, threads it into the first form (via ->),
-  and when that result is not nil, through the next etc"
-  {:added "1.5"}
-  [expr & forms]
-  (let [g (gensym)
-        pstep (fn [step] `(if (nil? ~g) nil (-> ~g ~step)))]
-    `(let [~g ~expr
-           ~@(interleave (repeat g) (map pstep forms))]
-       ~g)))
-
-(defmacro some->>
-  "When expr is not nil, threads it into the first form (via ->>),
-  and when that result is not nil, through the next etc"
-  {:added "1.5"}
-  [expr & forms]
-  (let [g (gensym)
-        pstep (fn [step] `(if (nil? ~g) nil (->> ~g ~step)))]
-    `(let [~g ~expr
-           ~@(interleave (repeat g) (map pstep forms))]
-       ~g)))

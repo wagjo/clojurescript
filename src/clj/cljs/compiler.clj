@@ -227,7 +227,9 @@
 (defmethod emit :meta
   [{:keys [expr meta env]}]
   (emit-wrap env
-    (emits "cljs.core.with_meta(" expr "," meta ")")))
+             (if (:reader-tuple (clojure.core/meta (:form expr)))
+               (emits expr)
+               (emits "cljs.core.with_meta(" expr "," meta ")"))))
 
 (def ^:private array-map-threshold 16)
 (def ^:private obj-map-threshold 32)
@@ -263,12 +265,17 @@
              "])"))))
 
 (defmethod emit :vector
-  [{:keys [items env]}]
+  [{:keys [items env form]}]
   (emit-wrap env
     (if (empty? items)
       (emits "cljs.core.PersistentVector.EMPTY")
-      (emits "cljs.core.PersistentVector.fromArray(["
-             (comma-sep items) "], true)"))))
+      (if (:reader-tuple (meta form))
+        (emits "(new cljs.core.Tuple(" (str (count items)) ", "
+               (comma-sep items)
+               (repeat (max 0 (- 6 (count items))) ", null")
+               "))")
+        (emits "cljs.core.PersistentVector.fromArray(["
+               (comma-sep items) "], true)")))))
 
 (defmethod emit :set
   [{:keys [items env]}]

@@ -7351,10 +7351,36 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
 
 ;;;; WAGJO CUSTOM STUFF
 
+;;; Tuple type
+
+;; NOTE: All tuples are of the same type. This allows V8 to perform
+;;       optimizations based on function argument types.
+(deftype Tuple [arity x1 x2 x3 x4 x5 x6]
+  IPrintWithWriter
+  (-pr-writer [_ wr _]
+    (-write wr (str "[" arity
+                    " " x1 " " x2 " " x3 " " x4  " " x5 " " x6 "]")))
+  IHash
+  (-hash [o]
+    (hash [:tuple arity x1 x2 x3 x4 x5 x6]))
+  IEquiv
+  (-equiv [o other] (and (instance? Tuple other)
+                         (= arity (.-arity other))
+                         (= x1 (.-x1 other))
+                         (= x2 (.-x2 other))
+                         (= x3 (.-x3 other))
+                         (= x4 (.-x4 other))
+                         (= x5 (.-x5 other))
+                         (= x6 (.-x6 other)))))
+
+;;; Logging
+
 (defn log
   "Prints messages to console, separated by newline."
   [& messages]
   (.log js/console (apply str (interpose \newline messages))))
+
+;;; High resolution timer
 
 (defn hires-now
   "High resolution now(). Returns the number of milliseconds from the
