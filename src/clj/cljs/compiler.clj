@@ -1125,4 +1125,3 @@
     (aset ^"[Lclojure.lang.IFn;" dm (int ch) fun)))
 
 (dispatch-reader-macro \[ tuple-literal)
-

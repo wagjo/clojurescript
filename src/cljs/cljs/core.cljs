@@ -7356,13 +7356,19 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
 ;; NOTE: All tuples are of the same type. This allows V8 to perform
 ;;       optimizations based on function argument types.
 (deftype Tuple [arity x1 x2 x3 x4 x5 x6]
+  Object
+  (toString [o]
+    (pr-str o))
+
   IPrintWithWriter
   (-pr-writer [_ wr _]
-    (-write wr (str "[" arity
-                    " " x1 " " x2 " " x3 " " x4  " " x5 " " x6 "]")))
+    (-write wr (str "#<Tuple" arity
+                    " " x1 " " x2 " " x3 " " x4  " " x5 " " x6 ">")))
+
   IHash
   (-hash [_]
     (hash [:tuple arity x1 x2 x3 x4 x5 x6]))
+
   IEquiv
   (-equiv [_ other] (and (instance? Tuple other)
                          (= arity (.-arity other))
