@@ -1106,3 +1106,23 @@
             ]]
   (->> e (analyze envx) emit)
   (newline)))
+
+;;;; WAGJO CUSTOM STUFF
+
+;;; tuple reader macro
+
+(defn tuple-literal
+  [rdr letter-bracket]
+  (let [l (clojure.lang.LispReader/readDelimitedList
+           \] ^java.io.PushbackReader rdr true)]
+    (with-meta (vec l) {:reader-tuple true})))
+
+(defn dispatch-reader-macro [ch fun]
+  (let [dm (.get (doto (.getDeclaredField clojure.lang.LispReader
+                                          "dispatchMacros")
+                   (.setAccessible true))
+                 nil)]
+    (aset ^"[Lclojure.lang.IFn;" dm (int ch) fun)))
+
+(dispatch-reader-macro \[ tuple-literal)
+
