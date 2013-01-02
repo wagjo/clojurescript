@@ -271,10 +271,10 @@
               (empty? items)
               (emits "cljs.core.PersistentVector.EMPTY")
               (:reader-tuple (meta form))
-              (emits "(new cljs.core.ObjVector(null, "
+              (emits "(new cljs.core.Tuple("
                      (str (count items)) ", " (comma-sep items)
                      (repeat (max 0 (- 6 (count items))) ", null")
-                     ", null))")
+                     "))")
               :else
               (emits "cljs.core.PersistentVector.fromArray(["
                      (comma-sep items) "], true)"))

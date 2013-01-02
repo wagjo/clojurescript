@@ -3331,7 +3331,7 @@ reduces them without incurring seq initialization"
 
   IEmptyableCollection
   (-empty [coll]
-    (with-meta cljs.core.ObjVector/EMPTY meta))
+    (with-meta cljs.core.PersistentVector/EMPTY meta))
 
   IChunkedSeq
   (-chunked-first [coll]
