@@ -267,7 +267,7 @@
 (defmethod emit :vector
   [{:keys [items env form]}]
   (emit-wrap env
-             (cond
+             #_(cond
               (empty? items)
               (emits "cljs.core.PersistentVector.EMPTY")
               (:reader-tuple (meta form))
@@ -278,7 +278,7 @@
               :else
               (emits "cljs.core.PersistentVector.fromArray(["
                      (comma-sep items) "], true)"))
-             #_(cond
+             (cond
               (empty? items)
               (emits "cljs.core.ObjVector.EMPTY")
               (< 6 (count items))

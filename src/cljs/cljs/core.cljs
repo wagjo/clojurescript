@@ -2994,7 +2994,7 @@ reduces them without incurring seq initialization"
       (do (condp identical? cnt
             0 (set! x0 o) 1 (set! x1 o) 2 (set! x2 o)
             3 (set! x3 o) 4 (set! x4 o) (set! x5 o))
-          (set! cnt (int cnt))
+          (set! cnt (inc cnt))
           tcoll)
       (-as-transient (cljs.core.PersistentVector/fromArray
                       (array x0 x1 x2 x3 x4 x5 o) true))))
@@ -3286,7 +3286,7 @@ reduces them without incurring seq initialization"
 (defn vec [coll]
   (-persistent!
    (reduce -conj!
-           (-as-transient cljs.core.PersistentVector/EMPTY)
+           (-as-transient cljs.core.ObjVector/EMPTY)
            coll)))
 
 (defn vector [& args] (vec args))
@@ -3331,7 +3331,7 @@ reduces them without incurring seq initialization"
 
   IEmptyableCollection
   (-empty [coll]
-    (with-meta cljs.core.PersistentVector/EMPTY meta))
+    (with-meta cljs.core.ObjVector/EMPTY meta))
 
   IChunkedSeq
   (-chunked-first [coll]
