@@ -2858,6 +2858,189 @@ reduces them without incurring seq initialization"
 
 (set! cljs.core.Vector/fromArray (fn [xs] (Vector. nil xs nil)))
 
+;;; ObjVector
+
+(declare PersistentVector TransientObjVector)
+
+(deftype ObjVector [meta cnt x0 x1 x2 x3 x4 x5 ^:mutable __hash]
+  Object
+  (toString [this] (pr-str this))
+
+  IWithMeta
+  (-with-meta [coll meta]
+    (ObjVector. meta cnt x0 x1 x2 x3 x4 x5 __hash))
+
+  IMeta
+  (-meta [coll] meta)
+
+  IStack
+  (-peek [coll]
+    (condp identical? cnt 0 nil 1 x0 2 x1 3 x2 4 x3 5 x4 x5))
+  (-pop [coll]
+    (cond (zero? cnt) (throw (js/Error. "Can't pop empty vector"))
+          (== 1 cnt) (-with-meta cljs.core.ObjVector/EMPTY meta)
+          :else (ObjVector. meta (dec cnt) x0 x1 x2 x3 x4 x5 nil)))
+  
+  ICollection
+  (-conj [coll o]
+    (condp identical? cnt
+      0 (ObjVector. meta 1 o nil nil nil nil nil nil)
+      1 (ObjVector. meta 2 x0 o nil nil nil nil nil)
+      2 (ObjVector. meta 3 x0 x1 o nil nil nil nil)
+      3 (ObjVector. meta 4 x0 x1 x2 o nil nil nil)
+      4 (ObjVector. meta 5 x0 x1 x2 x3 o nil nil)
+      5 (ObjVector. meta 6 x0 x1 x2 x3 x4 o nil)
+      (cljs.core.PersistentVector/fromArray
+       (array x0 x1 x2 x3 x4 x5 o) true)))
+
+  IEmptyableCollection
+  (-empty [coll] (-with-meta cljs.core.ObjVector/EMPTY meta))
+
+  ISequential
+  IEquiv
+  (-equiv [coll other] (equiv-sequential coll other))
+
+  IHash
+  (-hash [coll] (caching-hash coll hash-coll __hash))
+
+  ISeqable
+  (-seq [coll] (when (pos? cnt) coll))
+
+  ISeq
+  (-first [coll] x0)
+  (-rest [coll]
+    (cond (zero? cnt) coll
+          (== cnt 1) (-with-meta cljs.core.ObjVector/EMPTY meta)
+          :else (ObjVector. meta (dec cnt) x1 x2 x3 x4 x5 nil nil)))
+  
+  INext
+  (-next [coll]
+    (cond (zero? cnt) nil
+          (== cnt 1) nil
+          :else (ObjVector. meta (dec cnt) x1 x2 x3 x4 x5 nil nil)))
+  
+  ICounted
+  (-count [coll] cnt)
+
+  IIndexed
+  (-nth [coll n]
+    (condp identical? n 0 x0 1 x1 2 x2 3 x3 4 x4 x5))
+  (-nth [coll n not-found]
+    (if (and (<= 0 n) (< n cnt))
+      (condp identical? n 0 x0 1 x1 2 x2 3 x3 4 x4 x5)
+      not-found))
+
+  ILookup
+  (-lookup [coll k] (-nth coll k nil))
+  (-lookup [coll k not-found] (-nth coll k not-found))
+
+  IMapEntry
+  (-key [coll] (-nth coll 0))
+  (-val [coll] (-nth coll 1))
+
+  IAssociative
+  (-assoc [coll k v]
+    (cond (and (<= 0 k) (< k cnt))
+          (condp identical? k
+            0 (ObjVector. meta cnt v x1 x2 x3 x4 x5 nil)
+            1 (ObjVector. meta cnt x0 v x2 x3 x4 x5 nil)
+            2 (ObjVector. meta cnt x0 x1 v x3 x4 x5 nil)
+            3 (ObjVector. meta cnt x0 x1 x2 v x4 x5 nil)
+            4 (ObjVector. meta cnt x0 x1 x2 x3 v x5 nil)
+            (ObjVector. meta cnt x0 x1 x2 x3 x4 v nil))
+          (== k cnt)
+          (-conj coll v)
+          :else
+          (throw (js/Error.
+                  (str "Index " k " out of bounds  [0," cnt "]")))))
+  
+  IVector
+  (-assoc-n [coll n val] (-assoc coll n val))
+
+  IReduce
+  (-reduce [v f] (ci-reduce v f))
+  (-reduce [v f start] (ci-reduce v f start))
+
+  IKVReduce
+  (-kv-reduce [v f init]
+    (loop [i 0 init init]
+      (if (< i cnt)
+        (let [x (condp == i 0 x0 1 x1 2 x2 3 x3 4 x4 x5)
+              new-init (f init i x)]
+          (if (reduced? new-init)
+            @new-init
+            (recur (inc i) new-init)))
+        init)))
+  
+  IFn
+  (-invoke [coll k] (-lookup coll k))
+  (-invoke [coll k not-found] (-lookup coll k not-found))
+
+  IEditableCollection
+  (-as-transient [coll] (TransientObjVector. cnt x0 x1 x2 x3 x4 x5))
+
+  IReversible
+  (-rseq [coll] (if (pos? cnt) (RSeq. coll (dec cnt) nil) ())))
+
+(set! cljs.core.ObjVector/EMPTY
+      (ObjVector. nil 0 nil nil nil nil nil nil 0))
+
+(deftype TransientObjVector
+    [^:mutable cnt ^:mutable x0 ^:mutable x1
+     ^:mutable x2 ^:mutable x3 ^:mutable x4 ^:mutable x5]
+  ITransientCollection
+  (-conj! [tcoll o]
+    (if (< cnt 6)
+      (do (condp identical? cnt
+            0 (set! x0 o) 1 (set! x1 o) 2 (set! x2 o)
+            3 (set! x3 o) 4 (set! x4 o) (set! x5 o))
+          (set! cnt (int cnt))
+          tcoll)
+      (-as-transient (cljs.core.PersistentVector/fromArray
+                      (array x0 x1 x2 x3 x4 x5 o) true))))
+  (-persistent! [tcoll]
+    (ObjVector. nil cnt x0 x1 x2 x3 x4 x5 nil))
+
+  ITransientAssociative
+  (-assoc! [tcoll key val] (-assoc-n! tcoll key val))
+
+  ITransientVector
+  (-assoc-n! [tcoll k v]
+    (cond (and (<= 0 k) (< k cnt))
+          (do (condp identical? k
+                0 (set! x0 v) 1 (set! x1 v) 2 (set! x2 v)
+                3 (set! x3 v) 4 (set! x4 v) (set! x5 v))
+              tcoll)
+          (== k cnt)
+          (-conj! tcoll v)
+          :else
+          (throw (js/Error.
+                  (str "Index " k " out of bounds  [0," cnt "]")))))
+  (-pop! [tcoll]
+    (when (zero? cnt)
+      (throw (js/Error. "Can't pop empty vector")))
+    (set! cnt (dec cnt))
+    tcoll)
+
+  ICounted
+  (-count [coll] cnt)
+
+  IIndexed
+  (-nth [coll n]
+    (condp == n 0 x0 1 x1 2 x2 3 x3 4 x4 x5))
+  (-nth [coll n not-found]
+    (if (and (<= 0 n) (< n cnt))
+      (condp == n 0 x0 1 x1 2 x2 3 x3 4 x4 x5)
+      not-found))
+
+  ILookup
+  (-lookup [coll k] (-nth coll k nil))
+  (-lookup [coll k not-found] (-nth coll k not-found))
+
+  IFn
+  (-invoke [coll k] (-lookup coll k))
+  (-invoke [coll k not-found] (-lookup coll k not-found)))
+
 ;;; PersistentVector
 
 (deftype VectorNode [edit arr])
@@ -3148,7 +3331,7 @@ reduces them without incurring seq initialization"
 
   IEmptyableCollection
   (-empty [coll]
-    (with-meta cljs.core.PersistentVector/EMPTY meta))
+    (with-meta cljs.core.ObjVector/EMPTY meta))
 
   IChunkedSeq
   (-chunked-first [coll]
@@ -6501,6 +6684,9 @@ reduces them without incurring seq initialization"
   PersistentVector
   (-pr-seq [coll opts] ^:deprecation-nowarn (pr-sequential pr-seq "[" " " "]" opts coll))
 
+  ObjVector
+  (-pr-seq [coll opts] ^:deprecation-nowarn (pr-sequential pr-seq "[" " " "]" opts coll))
+
   ChunkedCons
   (-pr-seq [coll opts] ^:deprecation-nowarn (pr-sequential pr-seq "(" " " ")" opts coll))
 
@@ -6634,6 +6820,9 @@ reduces them without incurring seq initialization"
   Vector
   (-pr-writer [coll writer opts] ^:deprecation-nowarn (pr-sequential-writer writer pr-writer "[" " " "]" opts coll))
 
+  ObjVector
+  (-pr-writer [coll writer opts] ^:deprecation-nowarn (pr-sequential-writer writer pr-writer "[" " " "]" opts coll))
+
   PersistentVector
   (-pr-writer [coll writer opts] ^:deprecation-nowarn (pr-sequential-writer writer pr-writer "[" " " "]" opts coll))
 
@@ -6689,6 +6878,8 @@ reduces them without incurring seq initialization"
 
 ;; IComparable
 (extend-protocol IComparable
+  ObjVector
+  (-compare [x y] (compare-indexed x y))
   PersistentVector
   (-compare [x y] (compare-indexed x y)))
 

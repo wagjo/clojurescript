@@ -267,17 +267,28 @@
 (defmethod emit :vector
   [{:keys [items env form]}]
   (emit-wrap env
-    (if (empty? items)
-      (emits "cljs.core.PersistentVector.EMPTY")
-      #_(emits "cljs.core.PersistentVector.fromArray(["
-               (comma-sep items) "], true)")
-      (if (:reader-tuple (meta form))
-        (emits "(new cljs.core.Tuple(" (str (count items)) ", "
-               (comma-sep items)
-               (repeat (max 0 (- 6 (count items))) ", null")
-               "))")
-        (emits "cljs.core.PersistentVector.fromArray(["
-               (comma-sep items) "], true)")))))
+             (cond
+              (empty? items)
+              (emits "cljs.core.PersistentVector.EMPTY")
+              (:reader-tuple (meta form))
+              (emits "(new cljs.core.ObjVector(null, "
+                     (str (count items)) ", " (comma-sep items)
+                     (repeat (max 0 (- 6 (count items))) ", null")
+                     ", null))")
+              :else
+              (emits "cljs.core.PersistentVector.fromArray(["
+                     (comma-sep items) "], true)"))
+             #_(cond
+              (empty? items)
+              (emits "cljs.core.ObjVector.EMPTY")
+              (< 6 (count items))
+              (emits "cljs.core.PersistentVector.fromArray(["
+                     (comma-sep items) "], true)")
+              :else
+              (emits "(new cljs.core.ObjVector(null, "
+                     (str (count items)) ", " (comma-sep items)
+                     (repeat (max 0 (- 6 (count items))) ", null")
+                     ", null))"))))
 
 (defmethod emit :set
   [{:keys [items env]}]
@@ -1115,7 +1126,9 @@
   [rdr letter-bracket]
   (let [l (clojure.lang.LispReader/readDelimitedList
            \] ^java.io.PushbackReader rdr true)]
-    (with-meta (vec l) {:reader-tuple true})))
+    ;;(vec l)
+    (with-meta (vec l) {:reader-tuple true})
+    ))
 
 (defn dispatch-reader-macro [ch fun]
   (let [dm (.get (doto (.getDeclaredField clojure.lang.LispReader
@@ -1125,3 +1138,4 @@
     (aset ^"[Lclojure.lang.IFn;" dm (int ch) fun)))
 
 (dispatch-reader-macro \[ tuple-literal)
+

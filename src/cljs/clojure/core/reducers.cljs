@@ -285,7 +285,12 @@
   ;;can't fold, single reduce
   (reduce reducef (combinef) coll))
  
- clojure.lang.IPersistentVector
+ clojure.lang.ObjVector
+ (coll-fold
+  [v n combinef reducef]
+  (foldvec v n combinef reducef))
+
+ clojure.lang.PersistentVector
  (coll-fold
   [v n combinef reducef]
   (foldvec v n combinef reducef))
