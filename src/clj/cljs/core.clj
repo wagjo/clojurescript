@@ -78,9 +78,9 @@
                                                 (next bs)
                                                 seen-rest?))))
                              ret))))
-                         pobjvec
+                         parrvec
                          (fn [bvec b val]
-                           (core/let [gvec (gensym "objvec__")]
+                           (core/let [gvec (gensym "arrvec__")]
                              (core/loop [ret (-> bvec (conj gvec) (conj (with-meta val nil)))
                                          n 0
                                          bs b
@@ -95,20 +95,14 @@
                                     (= firstb :as) (pb ret (second bs) gvec)
                                     (= firstb :cnt)
                                     (recur (pb ret (second bs)
-                                               (list `.-cnt gvec))
+                                               (list `alength (list `.-arr gvec)))
                                            n
                                            (next (next bs))
                                            seen-rest?)
                                     :else (if seen-rest?
                                          (throw (new Exception "Unsupported binding form, only :as can follow & parameter"))
                                          (recur (pb ret firstb
-                                                    (core/condp core/== n
-                                                     0 (list `.-x0 gvec)
-                                                     1 (list `.-x1 gvec)
-                                                     2 (list `.-x2 gvec)
-                                                     3 (list `.-x3 gvec)
-                                                     4 (list `.-x4 gvec)
-                                                     5 (list `.-x5 gvec)))
+                                                    (list 'js* "(~{}[~{}])" (list `.-arr gvec) n))
                                                 (core/inc n)
                                                 (next bs)
                                                 seen-rest?))))
@@ -141,7 +135,7 @@
                              ret))))]
                     (cond
                       (symbol? b) (-> bvec (conj b) (conj v))
-                      (and (vector? b) (clojure.core/= 'Tuple (:tag (meta v)))) (pobjvec bvec b v)
+                      (and (vector? b) (clojure.core/= 'Tuple (:tag (meta v)))) (parrvec bvec b v)
                       (vector? b) (pvec bvec b v)
                       (map? b) (pmap bvec b v)
                       :else (throw (new Exception (core/str "Unsupported binding form: " b))))))
