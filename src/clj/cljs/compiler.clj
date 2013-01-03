@@ -227,7 +227,7 @@
 (defmethod emit :meta
   [{:keys [expr meta env]}]
   (emit-wrap env
-             (emits "cljs.core.with_meta(" expr "," meta ")")))
+    (emits "cljs.core.with_meta(" expr "," meta ")")))
 
 (def ^:private array-map-threshold 16)
 (def ^:private obj-map-threshold 32)
@@ -263,19 +263,19 @@
              "])"))))
 
 (defmethod emit :vector
-  [{:keys [items env form]}]
+  [{:keys [items env]}]
   (emit-wrap env
-             (cond
-              (empty? items)
-              (emits "cljs.core.ObjVector.EMPTY")
-              (< 6 (count items))
-              (emits "cljs.core.PersistentVector.fromArray(["
-                     (comma-sep items) "], true)")
-              :else
-              (emits "(new cljs.core.ObjVector(null, "
-                     (str (count items)) ", " (comma-sep items)
-                     (repeat (max 0 (- 6 (count items))) ", null")
-                     ", null))"))))
+    (cond
+     (empty? items)
+     (emits "cljs.core.ObjVector.EMPTY")
+     (< 6 (count items))
+     (emits "cljs.core.PersistentVector.fromArray(["
+            (comma-sep items) "], true)")
+     :else
+     (emits "(new cljs.core.ObjVector(null, "
+            (str (count items)) ", " (comma-sep items)
+            (repeat (max 0 (- 6 (count items))) ", null")
+            ", null))"))))
 
 (defmethod emit :set
   [{:keys [items env]}]
