@@ -146,9 +146,9 @@
                       (map? b) (pmap bvec b v)
                       :else (throw (new Exception (core/str "Unsupported binding form: " b))))))
          process-entry (fn [bvec b] (pb bvec (first b) (second b)))]
-       (if (every? symbol? (map first bents))
-         bindings
-         (reduce process-entry [] bents))))
+        (if (every? symbol? (map first bents))
+          bindings
+          (reduce process-entry [] bents))))
 
 (defmacro let
   "binding => binding-form init-expr
