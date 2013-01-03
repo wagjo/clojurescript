@@ -227,9 +227,7 @@
 (defmethod emit :meta
   [{:keys [expr meta env]}]
   (emit-wrap env
-             (if (:reader-tuple (clojure.core/meta (:form expr)))
-               (emits expr)
-               (emits "cljs.core.with_meta(" expr "," meta ")"))))
+             (emits "cljs.core.with_meta(" expr "," meta ")")))
 
 (def ^:private array-map-threshold 16)
 (def ^:private obj-map-threshold 32)
@@ -267,17 +265,6 @@
 (defmethod emit :vector
   [{:keys [items env form]}]
   (emit-wrap env
-             #_(cond
-              (empty? items)
-              (emits "cljs.core.PersistentVector.EMPTY")
-              (:reader-tuple (meta form))
-              (emits "(new cljs.core.Tuple("
-                     (str (count items)) ", " (comma-sep items)
-                     (repeat (max 0 (- 6 (count items))) ", null")
-                     "))")
-              :else
-              (emits "cljs.core.PersistentVector.fromArray(["
-                     (comma-sep items) "], true)"))
              (cond
               (empty? items)
               (emits "cljs.core.ObjVector.EMPTY")
@@ -1117,25 +1104,3 @@
             ]]
   (->> e (analyze envx) emit)
   (newline)))
-
-;;;; WAGJO CUSTOM STUFF
-
-;;; tuple reader macro
-
-(defn tuple-literal
-  [rdr letter-bracket]
-  (let [l (clojure.lang.LispReader/readDelimitedList
-           \] ^java.io.PushbackReader rdr true)]
-    ;;(vec l)
-    (with-meta (vec l) {:reader-tuple true})
-    ))
-
-(defn dispatch-reader-macro [ch fun]
-  (let [dm (.get (doto (.getDeclaredField clojure.lang.LispReader
-                                          "dispatchMacros")
-                   (.setAccessible true))
-                 nil)]
-    (aset ^"[Lclojure.lang.IFn;" dm (int ch) fun)))
-
-(dispatch-reader-macro \[ tuple-literal)
-

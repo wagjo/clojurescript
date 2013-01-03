@@ -2875,22 +2875,29 @@ reduces them without incurring seq initialization"
 
   IStack
   (-peek [coll]
-    (condp identical? cnt 0 nil 1 x0 2 x1 3 x2 4 x3 5 x4 x5))
+    ;; NOTE: condp is slow
+    (cond (== cnt 0) nil
+          (== cnt 1) x0
+          (== cnt 2) x1
+          (== cnt 3) x2
+          (== cnt 4) x3
+          (== cnt 5) x4
+          :else x5))
   (-pop [coll]
     (cond (zero? cnt) (throw (js/Error. "Can't pop empty vector"))
-          (== 1 cnt) (-with-meta cljs.core.ObjVector/EMPTY meta)
+          (== cnt 1) (-with-meta cljs.core.ObjVector/EMPTY meta)
           :else (ObjVector. meta (dec cnt) x0 x1 x2 x3 x4 x5 nil)))
   
   ICollection
   (-conj [coll o]
-    (condp identical? cnt
-      0 (ObjVector. meta 1 o nil nil nil nil nil nil)
-      1 (ObjVector. meta 2 x0 o nil nil nil nil nil)
-      2 (ObjVector. meta 3 x0 x1 o nil nil nil nil)
-      3 (ObjVector. meta 4 x0 x1 x2 o nil nil nil)
-      4 (ObjVector. meta 5 x0 x1 x2 x3 o nil nil)
-      5 (ObjVector. meta 6 x0 x1 x2 x3 x4 o nil)
-      (cljs.core.PersistentVector/fromArray
+    (cond 
+     (== cnt 0) (ObjVector. meta 1 o nil nil nil nil nil nil)
+     (== cnt 1) (ObjVector. meta 2 x0 o nil nil nil nil nil)
+     (== cnt 2) (ObjVector. meta 3 x0 x1 o nil nil nil nil)
+     (== cnt 3) (ObjVector. meta 4 x0 x1 x2 o nil nil nil)
+     (== cnt 4) (ObjVector. meta 5 x0 x1 x2 x3 o nil nil)
+     (== cnt 5) (ObjVector. meta 6 x0 x1 x2 x3 x4 o nil)
+     :else (cljs.core.PersistentVector/fromArray
        (array x0 x1 x2 x3 x4 x5 o) true)))
 
   IEmptyableCollection
@@ -2924,10 +2931,20 @@ reduces them without incurring seq initialization"
 
   IIndexed
   (-nth [coll n]
-    (condp identical? n 0 x0 1 x1 2 x2 3 x3 4 x4 x5))
+    (cond (== n 0) x0
+          (== n 1) x1
+          (== n 2) x2
+          (== n 3) x3
+          (== n 4) x4
+          :else x5))
   (-nth [coll n not-found]
     (if (and (<= 0 n) (< n cnt))
-      (condp identical? n 0 x0 1 x1 2 x2 3 x3 4 x4 x5)
+      (cond (== n 0) x0
+            (== n 1) x1
+            (== n 2) x2
+            (== n 3) x3
+            (== n 4) x4
+            :else x5)
       not-found))
 
   ILookup
@@ -2941,13 +2958,12 @@ reduces them without incurring seq initialization"
   IAssociative
   (-assoc [coll k v]
     (cond (and (<= 0 k) (< k cnt))
-          (condp identical? k
-            0 (ObjVector. meta cnt v x1 x2 x3 x4 x5 nil)
-            1 (ObjVector. meta cnt x0 v x2 x3 x4 x5 nil)
-            2 (ObjVector. meta cnt x0 x1 v x3 x4 x5 nil)
-            3 (ObjVector. meta cnt x0 x1 x2 v x4 x5 nil)
-            4 (ObjVector. meta cnt x0 x1 x2 x3 v x5 nil)
-            (ObjVector. meta cnt x0 x1 x2 x3 x4 v nil))
+          (cond (== k 0) (ObjVector. meta cnt v x1 x2 x3 x4 x5 nil)
+                (== k 1) (ObjVector. meta cnt x0 v x2 x3 x4 x5 nil)
+                (== k 2) (ObjVector. meta cnt x0 x1 v x3 x4 x5 nil)
+                (== k 3) (ObjVector. meta cnt x0 x1 x2 v x4 x5 nil)
+                (== k 4) (ObjVector. meta cnt x0 x1 x2 x3 v x5 nil)
+                :else (ObjVector. meta cnt x0 x1 x2 x3 x4 v nil))
           (== k cnt)
           (-conj coll v)
           :else
@@ -2965,7 +2981,12 @@ reduces them without incurring seq initialization"
   (-kv-reduce [v f init]
     (loop [i 0 init init]
       (if (< i cnt)
-        (let [x (condp == i 0 x0 1 x1 2 x2 3 x3 4 x4 x5)
+        (let [x (cond (== i 0) x0
+                      (== i 1) x1
+                      (== i 2) x2
+                      (== i 3) x3
+                      (== i 4) x4
+                      :else x5)
               new-init (f init i x)]
           (if (reduced? new-init)
             @new-init
@@ -2991,9 +3012,12 @@ reduces them without incurring seq initialization"
   ITransientCollection
   (-conj! [tcoll o]
     (if (< cnt 6)
-      (do (condp identical? cnt
-            0 (set! x0 o) 1 (set! x1 o) 2 (set! x2 o)
-            3 (set! x3 o) 4 (set! x4 o) (set! x5 o))
+      (do (cond (== cnt 0) (set! x0 o)
+                (== cnt 1) (set! x1 o)
+                (== cnt 2) (set! x2 o)
+                (== cnt 3) (set! x3 o)
+                (== cnt 4) (set! x4 o)
+                :else (set! x5 o))
           (set! cnt (inc cnt))
           tcoll)
       (-as-transient (cljs.core.PersistentVector/fromArray
@@ -3007,9 +3031,12 @@ reduces them without incurring seq initialization"
   ITransientVector
   (-assoc-n! [tcoll k v]
     (cond (and (<= 0 k) (< k cnt))
-          (do (condp identical? k
-                0 (set! x0 v) 1 (set! x1 v) 2 (set! x2 v)
-                3 (set! x3 v) 4 (set! x4 v) (set! x5 v))
+          (do (cond (== k 0) (set! x0 v)
+                    (== k 1) (set! x1 v)
+                    (== k 2) (set! x2 v)
+                    (== k 3) (set! x3 v)
+                    (== k 4) (set! x4 v)
+                    :else (set! x5 v))
               tcoll)
           (== k cnt)
           (-conj! tcoll v)
@@ -3027,10 +3054,20 @@ reduces them without incurring seq initialization"
 
   IIndexed
   (-nth [coll n]
-    (condp == n 0 x0 1 x1 2 x2 3 x3 4 x4 x5))
+    (cond (== n 0) x0
+          (== n 1) x1
+          (== n 2) x2
+          (== n 3) x3
+          (== n 4) x4
+          :else x5))
   (-nth [coll n not-found]
     (if (and (<= 0 n) (< n cnt))
-      (condp == n 0 x0 1 x1 2 x2 3 x3 4 x4 x5)
+      (cond (== n 0) x0
+            (== n 1) x1
+            (== n 2) x2
+            (== n 3) x3
+            (== n 4) x4
+            :else x5)
       not-found))
 
   ILookup

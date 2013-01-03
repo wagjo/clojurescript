@@ -141,7 +141,6 @@
                              ret))))]
                 (cond
                  (symbol? b) (-> bvec (conj b) (conj v))
-                 (and (vector? b) (:reader-tuple (meta b))) (pobjvec bvec b v)
                  (and (vector? b) (clojure.core/= 'Tuple (:tag (meta v)))) (pobjvec bvec b v)
                  (vector? b) (pvec bvec b v)
                  (map? b) (pmap bvec b v)
