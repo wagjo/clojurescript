@@ -140,15 +140,15 @@
                                       (next bes)))
                              ret))))]
                     (cond
-                     (symbol? b) (-> bvec (conj b) (conj v))
-                     (and (vector? b) (clojure.core/= 'Tuple (:tag (meta v)))) (pobjvec bvec b v)
-                     (vector? b) (pvec bvec b v)
-                     (map? b) (pmap bvec b v)
-                     :else (throw (new Exception (core/str "Unsupported binding form: " b))))))
-        process-entry (fn [bvec b] (pb bvec (first b) (second b)))]
-      (if (every? symbol? (map first bents))
-        bindings
-        (reduce process-entry [] bents))))
+                      (symbol? b) (-> bvec (conj b) (conj v))
+                      (and (vector? b) (clojure.core/= 'Tuple (:tag (meta v)))) (pobjvec bvec b v)
+                      (vector? b) (pvec bvec b v)
+                      (map? b) (pmap bvec b v)
+                      :else (throw (new Exception (core/str "Unsupported binding form: " b))))))
+         process-entry (fn [bvec b] (pb bvec (first b) (second b)))]
+       (if (every? symbol? (map first bents))
+         bindings
+         (reduce process-entry [] bents))))
 
 (defmacro let
   "binding => binding-form init-expr
