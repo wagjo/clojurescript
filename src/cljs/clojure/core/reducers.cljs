@@ -285,7 +285,7 @@
   ;;can't fold, single reduce
   (reduce reducef (combinef) coll))
  
- clojure.lang.ObjVector
+ clojure.lang.ArrayVector
  (coll-fold
   [v n combinef reducef]
   (foldvec v n combinef reducef))
