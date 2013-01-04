@@ -265,10 +265,15 @@
 (defmethod emit :vector
   [{:keys [items env]}]
   (emit-wrap env
-    (if (empty? items)
-      (emits "cljs.core.PersistentVector.EMPTY")
-      (emits "cljs.core.PersistentVector.fromArray(["
-             (comma-sep items) "], true)"))))
+    (cond
+     (empty? items)
+     (emits "cljs.core.ArrayVector.EMPTY")
+     (< (count items) 32)
+     (emits "(new cljs.core.ArrayVector(null, ["
+            (comma-sep items) "], null))")
+     :else
+     (emits "cljs.core.PersistentVector.fromArray(["
+            (comma-sep items) "], true)"))))
 
 (defmethod emit :set
   [{:keys [items env]}]

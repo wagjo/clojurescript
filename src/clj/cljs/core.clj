@@ -56,8 +56,9 @@
          pb (fn pb [bvec b v]
               (core/let [pvec
                      (fn [bvec b val]
-                       (core/let [gvec (gensym "vec__")]
-                         (core/loop [ret (-> bvec (conj gvec) (conj val))
+                       (core/let [gvec (gensym "vec__")
+                                  arr-vec? (clojure.core/= 'ArrayVector (:tag (meta val)))]
+                         (core/loop [ret (-> bvec (conj gvec) (conj (if arr-vec? (with-meta val nil) val)))
                                      n 0
                                      bs b
                                      seen-rest? false]
@@ -71,7 +72,10 @@
                                  (= firstb :as) (pb ret (second bs) gvec)
                                  :else (if seen-rest?
                                          (throw (new Exception "Unsupported binding form, only :as can follow & parameter"))
-                                         (recur (pb ret firstb  (list `nth gvec n nil))
+                                         (recur (pb ret firstb
+                                                    (if arr-vec?
+                                                      (list 'js* "(~{}[~{}])" (list `.-arr gvec) n)
+                                                      (list `nth gvec n nil)))
                                                 (core/inc n)
                                                 (next bs)
                                                 seen-rest?))))
