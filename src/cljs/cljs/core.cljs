@@ -2883,7 +2883,7 @@ reduces them without incurring seq initialization"
       (cond (zero? l) (throw (js/Error. "Can't pop empty vector"))
             (== l 1) (-with-meta cljs.core.ArrayVector/EMPTY meta)
             :else (ArrayVector. meta (.slice arr 0 (dec l)) nil))))
-  
+
   ICollection
   (-conj [coll o]
     (let [new-arr (.slice arr)]
@@ -2912,14 +2912,14 @@ reduces them without incurring seq initialization"
       (cond (zero? l) coll
             (== l 1) (-with-meta cljs.core.ArrayVector/EMPTY meta)
             :else (ArrayVector. meta (.slice arr 1) nil))))
-  
+
   INext
   (-next [coll]
     (let [l (.-length arr)]
         (cond (zero? l) nil
               (== l 1) nil
               :else (ArrayVector. meta (.slice arr 1) nil))))
-  
+
   ICounted
   (-count [coll] (.-length arr))
 
@@ -2950,7 +2950,7 @@ reduces them without incurring seq initialization"
             :else
             (throw (js/Error.
                     (str "Index " k " out of bounds  [0," l "]"))))))
-  
+
   IVector
   (-assoc-n [coll n val] (-assoc coll n val))
 
@@ -2969,7 +2969,7 @@ reduces them without incurring seq initialization"
               @new-init
               (recur (inc i) new-init)))
           init))))
-  
+
   IFn
   (-invoke [coll k] (-lookup coll k))
   (-invoke [coll k not-found] (-lookup coll k not-found))
@@ -7578,7 +7578,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   "High resolution now(). Returns the number of milliseconds from the
   start of navigation of the document."
   []
-  (if (goog/isDef window.performance.webkitNow) 
+  (if (goog/isDef window.performance.webkitNow)
     (.webkitNow window.performance)
     (.now window.performance)))
 
