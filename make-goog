@@ -1,3 +1,0 @@
-#!/bin/sh
-
-jar cf ./lib/goog.jar -C closure/library/closure/ goog
