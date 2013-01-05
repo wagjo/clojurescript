@@ -14,3 +14,4 @@ closure
 *.zip
 clojurescript_release_*
 closure-release-*
+pom.xml
