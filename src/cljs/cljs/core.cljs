@@ -7537,34 +7537,6 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
 
 ;;;; WAGJO CUSTOM STUFF
 
-;;; Tuple type
-
-;; NOTE: All tuples are of the same type. This allows V8 to perform
-;;       optimizations based on function argument types.
-(deftype Tuple [cnt x0 x1 x2 x3 x4 x5]
-  Object
-  (toString [o]
-    (pr-str o))
-
-  IPrintWithWriter
-  (-pr-writer [_ wr _]
-    (-write wr (str "#<Tuple" cnt
-                    " " x0 " " x1 " " x2 " " x3  " " x4 " " x5 ">")))
-
-  IHash
-  (-hash [_]
-    (hash [:tuple cnt x0 x1 x2 x3 x4 x5]))
-
-  IEquiv
-  (-equiv [_ other] (and (instance? Tuple other)
-                         (= cnt (.-cnt other))
-                         (= x0 (.-x0 other))
-                         (= x1 (.-x1 other))
-                         (= x2 (.-x2 other))
-                         (= x3 (.-x3 other))
-                         (= x4 (.-x4 other))
-                         (= x5 (.-x5 other)))))
-
 ;;; Logging
 
 (defn log
