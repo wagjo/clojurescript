@@ -49,6 +49,7 @@
 (simple-benchmark [coll [1 2 3]] (conj coll 4) 1000000)
 (simple-benchmark [coll [1 2 3]] (-conj coll 4) 1000000)
 (simple-benchmark [coll [1 2 3]] (seq coll) 1000000)
+(simple-benchmark [coll [1 2 3]] (-seq coll) 1000000)
 (simple-benchmark [coll (seq [1 2 3])] (first coll) 1000000)
 (simple-benchmark [coll (seq [1 2 3])] (-first coll) 1000000)
 (simple-benchmark [coll (seq [1 2 3])] (rest coll) 1000000)
@@ -61,6 +62,13 @@
 (simple-benchmark [coll (reduce conj [] (range (+ 32768 32)))] (conj coll :foo) 100000)
 (simple-benchmark [coll (reduce conj [] (range 40000))] (assoc coll 123 :foo) 100000)
 (simple-benchmark [coll (reduce conj [] (range (+ 32768 33)))] (pop coll) 100000)
+(println)
+
+(println ";;; chunked seqs")
+(let [v (seq (into [] (range 64)))]
+  (simple-benchmark [] (-first v) 1000000)
+  (simple-benchmark [] (-next v) 1000000)
+  (simple-benchmark [] (-rest v) 1000000))
 (println)
 
 (println ";;; transients")
@@ -80,6 +88,15 @@
 
 (println ";; apply")
 (simple-benchmark [coll (into [] (range 1000000))] (apply + coll) 1)
+(simple-benchmark [] (list 1 2 3 4 5) 1000000)
+(simple-benchmark [xs (array-seq (array 1 2 3 4 5))] (apply list xs) 1000000)
+(simple-benchmark [xs (list 1 2 3 4 5)] (apply list xs) 1000000)
+(simple-benchmark [xs [1 2 3 4 5]] (apply list xs) 1000000) ;; slow
+(println)
+
+(println ";; update-in")
+(simple-benchmark [coll {:foo 1} ks [:foo]] (update-in coll ks inc) 1000000)
+(simple-benchmark [coll (array-map :foo 1) ks [:foo]] (update-in coll ks inc) 1000000)
 (println)
 
 (println ";;; obj-map")
@@ -97,6 +114,7 @@
 (simple-benchmark [coll (array-map :foo :bar :baz :woz)] (-lookup coll :baz) 1000000)
 (simple-benchmark [coll (array-map :foo :bar :baz :woz :lol :rofl)] (-lookup coll :lol) 1000000)
 (println)
+(def data-atom (atom {:x 0}))
 
 (println ";;; map / record ops")
 (simple-benchmark [coll {:foo 1 :bar 2}] (get coll :foo) 1000000)

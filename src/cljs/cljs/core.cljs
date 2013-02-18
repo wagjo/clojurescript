@@ -75,10 +75,20 @@
   argv as arguments"}
   *main-cli-fn* nil)
 
+(declare pr-str)
+
+(defn type [x]
+  (when-not (nil? x)
+    (.-constructor x)))
+
 (defn missing-protocol [proto obj]
-  (js/Error
-   (.join (array "No protocol method " proto
-                 " defined for type " (goog/typeOf obj) ": " obj) "")))
+  (let [ty (type obj)
+        ty (if (and ty (.-cljs$lang$type ty))
+             (pr-str ty)
+             (goog/typeOf obj))]
+   (js/Error.
+     (.join (array "No protocol method " proto
+                   " defined for type " ty ": " obj) ""))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; arrays ;;;;;;;;;;;;;;;;
 
@@ -417,10 +427,6 @@
          (= y (first more)))
        false)))
 
-(defn type [x]
-  (when-not (nil? x)
-    (.-constructor x)))
-
 (defn ^boolean instance? [t o]
   (js* "(~{o} instanceof ~{t})"))
 
@@ -626,7 +632,7 @@ reduces them without incurring seq initialization"
   "Returns true if coll implements nth in constant time"
   [x] (satisfies? IIndexed x))
 
-(deftype IndexedSeq [a i]
+(deftype IndexedSeq [arr i]
   Object
   (toString [this]
     (pr-str this))
@@ -636,28 +642,28 @@ reduces them without incurring seq initialization"
 
   ASeq
   ISeq
-  (-first [_] (aget a i))
-  (-rest [_] (if (< (inc i) (alength a))
-               (IndexedSeq. a (inc i))
+  (-first [_] (aget arr i))
+  (-rest [_] (if (< (inc i) (alength arr))
+               (IndexedSeq. arr (inc i))
                (list)))
 
   INext
-  (-next [_] (if (< (inc i) (alength a))
-               (IndexedSeq. a (inc i))
+  (-next [_] (if (< (inc i) (alength arr))
+               (IndexedSeq. arr (inc i))
                nil))
 
   ICounted
-  (-count [_] (- (alength a) i))
+  (-count [_] (- (alength arr) i))
 
   IIndexed
   (-nth [coll n]
     (let [i (+ n i)]
-      (when (< i (alength a))
-        (aget a i))))
+      (when (< i (alength arr))
+        (aget arr i))))
   (-nth [coll n not-found]
     (let [i (+ n i)]
-      (if (< i (alength a))
-        (aget a i)
+      (if (< i (alength arr))
+        (aget arr i)
         not-found)))
 
   ISequential
@@ -672,12 +678,12 @@ reduces them without incurring seq initialization"
 
   IReduce
   (-reduce [coll f]
-    (if (counted? a)
-      (ci-reduce a f (aget a i) (inc i))
-      (ci-reduce coll f (aget a i) 0)))
+    (if (counted? arr)
+      (ci-reduce arr f (aget arr i) (inc i))
+      (ci-reduce coll f (aget arr i) 0)))
   (-reduce [coll f start]
-    (if (counted? a)
-      (ci-reduce a f start i)
+    (if (counted? arr)
+      (ci-reduce arr f start i)
       (ci-reduce coll f start 0)))
 
   IHash
@@ -1726,14 +1732,20 @@ reduces them without incurring seq initialization"
     (rseq coll)
     (reduce conj () coll)))
 
-(defn list
-  ([] ())
-  ([x] (conj () x))
-  ([x y] (conj (list y) x))
-  ([x y z] (conj (list y z) x))
-  ([x y z & items]
-     (conj (conj (conj (reduce conj () (reverse items))
-                       z) y) x)))
+(defn list [& xs]
+  (let [arr (if (instance? IndexedSeq xs)
+              (.-arr xs)
+              (let [arr (array)]
+                (loop [^not-native xs xs]
+                  (if-not (nil? xs)
+                    (do
+                      (.push arr (-first xs))
+                      (recur (-next xs)))
+                    arr))))]
+    (loop [i (alength arr) ^not-native r ()]
+      (if (> i 0)
+        (recur (dec i) (-conj r (aget arr (dec i))))
+        r))))
 
 (deftype Cons [meta first rest ^:mutable __hash]
   IList
@@ -1935,9 +1947,9 @@ reduces them without incurring seq initialization"
 
 (defn array-chunk
   ([arr]
-     (array-chunk arr 0 (alength arr)))
+     (ArrayChunk. arr 0 (alength arr)))
   ([arr off]
-     (array-chunk arr off (alength arr)))
+     (ArrayChunk. arr off (alength arr)))
   ([arr off end]
      (ArrayChunk. arr off end)))
 
@@ -2797,11 +2809,26 @@ reduces them without incurring seq initialization"
   and any supplied args and return the new value, and returns a new
   nested structure.  If any levels do not exist, hash-maps will be
   created."
-  ([m [k & ks] f & args]
+  ([m [k & ks] f]
    (if ks
-     (assoc m k (apply update-in (get m k) ks f args))
-     (assoc m k (apply f (get m k) args)))))
-
+     (assoc m k (update-in (get m k) ks f))
+     (assoc m k (f (get m k)))))
+  ([m [k & ks] f a]
+   (if ks
+     (assoc m k (update-in (get m k) ks f a))
+     (assoc m k (f (get m k) a))))
+  ([m [k & ks] f a b]
+   (if ks
+     (assoc m k (update-in (get m k) ks f a b))
+     (assoc m k (f (get m k) a b))))
+  ([m [k & ks] f a b c]
+   (if ks
+     (assoc m k (update-in (get m k) ks f a b c))
+     (assoc m k (f (get m k) a b c))))
+  ([m [k & ks] f a b c & args]
+   (if ks
+     (assoc m k (apply update-in (get m k) ks f a b c args))
+     (assoc m k (apply f (get m k) a b c args)))))
 
 ;;; Vector
 ;;; DEPRECATED
@@ -3219,9 +3246,10 @@ reduces them without incurring seq initialization"
 
   ISeqable
   (-seq [coll]
-    (if (zero? cnt)
-      nil
-      (chunked-seq coll 0 0)))
+    (cond
+      (zero? cnt) nil
+      (< cnt 32) (array-seq tail)
+      :else (chunked-seq coll 0 0)))
 
   ICounted
   (-count [coll] cnt)
@@ -3390,8 +3418,8 @@ reduces them without incurring seq initialization"
   (-hash [coll] (caching-hash coll hash-coll __hash)))
 
 (defn chunked-seq
-  ([vec i off] (chunked-seq vec (array-for vec i) i off nil))
-  ([vec node i off] (chunked-seq vec node i off nil))
+  ([vec i off] (ChunkedSeq. vec (array-for vec i) i off nil nil))
+  ([vec node i off] (ChunkedSeq. vec node i off nil nil))
   ([vec node i off meta]
      (ChunkedSeq. vec node i off meta nil)))
 
@@ -3936,7 +3964,7 @@ reduces them without incurring seq initialization"
 
 (set! cljs.core.ObjMap/EMPTY (ObjMap. nil (array) (js-obj) 0 0))
 
-(set! cljs.core.ObjMap/HASHMAP_THRESHOLD 32)
+(set! cljs.core.ObjMap/HASHMAP_THRESHOLD 8)
 
 (set! cljs.core.ObjMap/fromObject (fn [ks obj] (ObjMap. nil ks obj 0 nil)))
 
@@ -4207,7 +4235,7 @@ reduces them without incurring seq initialization"
 
 (set! cljs.core.PersistentArrayMap/EMPTY (PersistentArrayMap. nil 0 (array) nil))
 
-(set! cljs.core.PersistentArrayMap/HASHMAP_THRESHOLD 16)
+(set! cljs.core.PersistentArrayMap/HASHMAP_THRESHOLD 8)
 
 (set! cljs.core.PersistentArrayMap/fromArrays
       (fn [ks vs]
