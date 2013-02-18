@@ -309,6 +309,55 @@
 (defprotocol IChunkedNext
   (-chunked-next [coll]))
 
+(defprotocol INamed
+  (-name [x])
+  (-namespace [x]))
+
+;;;;;;;;;;;;;;;;;;; symbols ;;;;;;;;;;;;;;;
+
+(declare list instance? symbol? hash-combine hash)
+
+(deftype Symbol [ns name str ^:mutable _hash _meta]
+  Object
+  (toString [_] str)
+  IEquiv
+  (-equiv [_ other]
+    (if (instance? Symbol other)
+      (identical? str (.-str other))
+      false))
+  IFn
+  (-invoke [sym coll]
+    (-lookup coll sym nil))
+  (-invoke [sym coll not-found]
+    (-lookup coll sym not-found))
+  IMeta
+  (-meta [_] _meta)
+  IWithMeta
+  (-with-meta [_ new-meta] (Symbol. ns name str _hash new-meta))
+  IHash
+  (-hash [_]
+    (if (== _hash -1)
+      (do
+        (set! _hash (hash-combine (hash ns) (hash name)))
+        _hash)
+      _hash))
+  INamed
+  (-name [_] name)
+  (-namespace [_] ns)
+  IPrintWithWriter
+  (-pr-writer [o writer _] (-write writer str)))
+
+(defn symbol
+  ([name]
+     (if (symbol? name)
+       name
+       (symbol nil name)))
+  ([ns name]
+     (let [sym-str (if-not (nil? ns)
+                     (str ns "/" name)
+                     name)]
+       (Symbol. ns name sym-str -1 nil))))
+
 ;;;;;;;;;;;;;;;;;;; fundamentals ;;;;;;;;;;;;;;;
 
 (defn ^seq seq
@@ -1032,16 +1081,14 @@ reduces them without incurring seq initialization"
 
 (defn ^boolean string? [x]
   (and ^boolean (goog/isString x)
-       (not (or (identical? (.charAt x 0) \uFDD0)
-                (identical? (.charAt x 0) \uFDD1)))))
+    (not (identical? (.charAt x 0) \uFDD0))))
 
 (defn ^boolean keyword? [x]
   (and ^boolean (goog/isString x)
        (identical? (.charAt x 0) \uFDD0)))
 
 (defn ^boolean symbol? [x]
-  (and ^boolean (goog/isString x)
-       (identical? (.charAt x 0) \uFDD1)))
+  (instance? Symbol x))
 
 (defn ^boolean number? [n]
   (goog/isNumber n))
@@ -1477,7 +1524,6 @@ reduces them without incurring seq initialization"
   one arg, returns the concatenation of the str values of the args."
   ([] "")
   ([x] (cond
-        (symbol? x) (. x (substring 2 (alength x)))
         (keyword? x) (str* ":" (. x (substring 2 (alength x))))
         (nil? x) ""
         :else (. x (toString))))
@@ -1505,15 +1551,6 @@ reduces them without incurring seq initialization"
                       x))
                 args)]
     (apply gstring/format fmt args)))
-
-(defn symbol
-  "Returns a Symbol with the given namespace and name."
-  ([name]
-     (cond
-      (symbol? name) name
-      (keyword? name) (str* "\uFDD1" "'" (subs name 2))
-      :else (str* "\uFDD1" "'" name)))
-  ([ns name] (symbol (str* ns "/" name))))
 
 (defn keyword
   "Returns a Keyword with the given namespace and name.  Do not use :
@@ -1800,7 +1837,7 @@ reduces them without incurring seq initialization"
     ([this coll not-found]
        (get coll (.toString this) not-found))))
 
-(set! (.-apply (.-prototype js/String))
+(set! js/String.prototype.apply
       (fn
         [s args]
         (if (< (count args) 2)
@@ -2731,16 +2768,18 @@ reduces them without incurring seq initialization"
   {:added "1.2"
    :static true}
   ([m ks]
-     (reduce get m ks))
+     (get-in m ks nil))
   ([m ks not-found]
      (loop [sentinel lookup-sentinel
             m m
             ks (seq ks)]
        (if ks
-         (let [m (get m (first ks) sentinel)]
-           (if (identical? sentinel m)
-             not-found
-             (recur sentinel m (next ks))))
+         (if (not (satisfies? ILookup m))
+           not-found
+           (let [m (get m (first ks) sentinel)]
+             (if (identical? sentinel m)
+               not-found
+               (recur sentinel m (next ks)))))
          m))))
 
 (defn assoc-in
@@ -3773,13 +3812,13 @@ reduces them without incurring seq initialization"
   (let [ks  (.-keys m)
         len (alength ks)
         so  (.-strobj m)
-        out (with-meta cljs.core.PersistentHashMap/EMPTY (meta m))]
+        mm  (meta m)]
     (loop [i   0
-           out (transient out)]
+           out (transient cljs.core.PersistentHashMap/EMPTY)]
       (if (< i len)
         (let [k (aget ks i)]
           (recur (inc i) (assoc! out k (aget so k))))
-        (persistent! (assoc! out k v))))))
+        (with-meta (persistent! (assoc! out k v)) mm)))))
 
 ;;; ObjMap
 
@@ -4014,14 +4053,37 @@ reduces them without incurring seq initialization"
 
 ;;; PersistentArrayMap
 
+(defn- equiv-nil [k k']
+  (nil? k'))
+
+(defn- equiv-pred [x]
+  (cond
+    ^boolean (goog/isString x) identical?
+    (nil? x) equiv-nil
+    (number? x) identical?
+    :else =))
+
 (defn- array-map-index-of [m k]
-  (let [arr (.-arr m)
-        len (alength arr)]
+  (let [arr  (.-arr m)
+        len  (alength arr)
+        pred (equiv-pred k)]
     (loop [i 0]
       (cond
         (<= len i) -1
-        (= (aget arr i) k) i
+        ^boolean (pred k (aget arr i)) i
         :else (recur (+ i 2))))))
+
+(defn- array-map-extend-kv [m k v]
+  (let [arr (.-arr m)
+        l (alength arr)
+        narr (make-array (+ l 2))]
+    (loop [i 0]
+      (when (< i l)
+        (aset narr i (aget arr i))
+        (recur (inc i))))
+    (aset narr l k)
+    (aset narr (inc l) v)
+    narr))
 
 (declare TransientArrayMap)
 
@@ -4084,14 +4146,11 @@ reduces them without incurring seq initialization"
         (if (< cnt cljs.core.PersistentArrayMap/HASHMAP_THRESHOLD)
           (PersistentArrayMap. meta
                                (inc cnt)
-                               (doto (aclone arr)
-                                 (.push k)
-                                 (.push v))
+                               (array-map-extend-kv coll k v)
                                nil)
-          (persistent!
-           (assoc!
-            (transient (into cljs.core.PersistentHashMap/EMPTY coll))
-            k v)))
+          (-with-meta
+            (-assoc (into cljs.core.PersistentHashMap/EMPTY coll) k v)
+            meta))
 
         (identical? v (aget arr (inc idx)))
         coll
@@ -5206,12 +5265,12 @@ reduces them without incurring seq initialization"
     (throw (js/Error. "red-black tree invariant violation"))))
 
 (defn- tree-map-kv-reduce [node f init]
-  (let [init (f init (.-key node) (.-val node))]
+  (let [init (if-not (nil? (.-left node))
+               (tree-map-kv-reduce (.-left node) f init)
+               init)]
     (if (reduced? init)
       @init
-      (let [init (if-not (nil? (.-left node))
-                   (tree-map-kv-reduce (.-left node) f init)
-                   init)]
+      (let [init (f init (.-key node) (.-val node))]
         (if (reduced? init)
           @init
           (let [init (if-not (nil? (.-right node))
@@ -6053,23 +6112,27 @@ reduces them without incurring seq initialization"
 (defn name
   "Returns the name String of a string, symbol or keyword."
   [x]
-  (cond
-    (string? x) x
-    (or (keyword? x) (symbol? x))
+  (if (satisfies? INamed x)
+    (-name x)
+    (cond
+      (string? x) x
+      (keyword? x)
       (let [i (.lastIndexOf x "/" (- (alength x) 2))]
         (if (< i 0)
           (subs x 2)
           (subs x (inc i))))
-    :else (throw (js/Error. (str "Doesn't support name: " x)))))
+      :else (throw (js/Error. (str "Doesn't support name: " x))))))
 
 (defn namespace
   "Returns the namespace String of a symbol or keyword, or nil if not present."
   [x]
-  (if (or (keyword? x) (symbol? x))
-    (let [i (.lastIndexOf x "/" (- (alength x) 2))]
-      (when (> i -1)
-        (subs x 2 i)))
-    (throw (js/Error. (str "Doesn't support namespace: " x)))))
+  (if (satisfies? INamed x)
+    (-namespace x)
+    (if (keyword? x)
+      (let [i (.lastIndexOf x "/" (- (alength x) 2))]
+        (when (> i -1)
+          (subs x 2 i)))
+      (throw (js/Error. (str "Doesn't support namespace: " x))))))
 
 (defn zipmap
   "Returns a map with the keys mapped to the corresponding vals."
@@ -6203,7 +6266,7 @@ reduces them without incurring seq initialization"
   (-count [rng]
     (if-not (-seq rng)
       0
-      (.ceil js/Math (/ (- end start) step))))
+      (js/Math.ceil (/ (- end start) step))))
 
   IIndexed
   (-nth [rng n]
@@ -6227,7 +6290,7 @@ reduces them without incurring seq initialization"
   "Returns a lazy seq of nums from start (inclusive) to end
    (exclusive), by step, where start defaults to 0, step to 1,
    and end to infinity."
-  ([] (range 0 (.-MAX_VALUE js/Number) 1))
+  ([] (range 0 js/Number.MAX_VALUE 1))
   ([end] (range 0 end 1))
   ([start end] (range start end 1))
   ([start end step] (Range. nil start end step nil)))
@@ -7208,9 +7271,15 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   "Creates a hierarchy object for use with derive, isa? etc."
   [] {:parents {} :descendants {} :ancestors {}})
 
-(def
-  ^{:private true}
-  global-hierarchy (atom (make-hierarchy)))
+(def ^:private -global-hierarchy nil)
+
+(defn- get-global-hierarchy []
+  (when (nil? -global-hierarchy)
+    (set! -global-hierarchy (atom (make-hierarchy))))
+  -global-hierarchy)
+
+(defn- swap-global-hierarchy! [f & args]
+  (apply swap! (get-global-hierarchy) f args))
 
 (defn ^boolean isa?
   "Returns true if (= child parent), or child is directly or indirectly derived from
@@ -7218,7 +7287,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   relationship established via derive. h must be a hierarchy obtained
   from make-hierarchy, if not supplied defaults to the global
   hierarchy"
-  ([child parent] (isa? @global-hierarchy child parent))
+  ([child parent] (isa? @(get-global-hierarchy) child parent))
   ([h child parent]
      (or (= child parent)
          ;; (and (class? parent) (class? child)
@@ -7237,7 +7306,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   inheritance relationship or a relationship established via derive. h
   must be a hierarchy obtained from make-hierarchy, if not supplied
   defaults to the global hierarchy"
-  ([tag] (parents @global-hierarchy tag))
+  ([tag] (parents @(get-global-hierarchy) tag))
   ([h tag] (not-empty (get (:parents h) tag))))
 
 (defn ancestors
@@ -7245,7 +7314,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   inheritance relationship or a relationship established via derive. h
   must be a hierarchy obtained from make-hierarchy, if not supplied
   defaults to the global hierarchy"
-  ([tag] (ancestors @global-hierarchy tag))
+  ([tag] (ancestors @(get-global-hierarchy) tag))
   ([h tag] (not-empty (get (:ancestors h) tag))))
 
 (defn descendants
@@ -7254,7 +7323,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   from make-hierarchy, if not supplied defaults to the global
   hierarchy. Note: does not work on JavaScript type inheritance
   relationships."
-  ([tag] (descendants @global-hierarchy tag))
+  ([tag] (descendants @(get-global-hierarchy) tag))
   ([h tag] (not-empty (get (:descendants h) tag))))
 
 (defn derive
@@ -7266,7 +7335,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   ([tag parent]
    (assert (namespace parent))
    ;; (assert (or (class? tag) (and (instance? cljs.core.Named tag) (namespace tag))))
-   (swap! global-hierarchy derive tag parent) nil)
+   (swap-global-hierarchy! derive tag parent) nil)
   ([h tag parent]
    (assert (not= tag parent))
    ;; (assert (or (class? tag) (instance? clojure.lang.Named tag)))
@@ -7296,8 +7365,8 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   tag. h must be a hierarchy obtained from make-hierarchy, if not
   supplied defaults to, and modifies, the global hierarchy."
   ([tag parent]
-     ;; (alter-var-root #'global-hierarchy underive tag parent)
-     (swap! global-hierarchy underive tag parent) nil)
+    (swap-global-hierarchy! underive tag parent)
+    nil)
   ([h tag parent]
     (let [parentMap (:parents h)
           childsParents (if (parentMap tag)
@@ -7342,7 +7411,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
 (defn- find-and-cache-best-method
   [name dispatch-val hierarchy method-table prefer-table method-cache cached-hierarchy]
   (let [best-entry (reduce (fn [be [k _ :as e]]
-                             (if (isa? dispatch-val k)
+                             (if (isa? @hierarchy dispatch-val k)
                                (let [be2 (if (or (nil? be) (dominates k (first be) prefer-table))
                                            e
                                            be)]
@@ -7534,6 +7603,12 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   [ex]
   (when (instance? ExceptionInfo ex)
     (.-cause ex)))
+
+(defn comparator
+  "Returns an JavaScript compatible comparator based upon pred."
+  [pred]
+  (fn [x y]
+    (cond (pred x y) -1 (pred y x) 1 :else 0)))
 
 ;;;; WAGJO CUSTOM STUFF
 

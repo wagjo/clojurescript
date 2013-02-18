@@ -151,9 +151,7 @@
   ([env sym] (resolve-var env sym nil))
   ([env sym confirm]
      (if (= (namespace sym) "js")
-       (do (when (some #{\.} (-> sym name str))
-             (warning env (str "Invalid js form " sym)))
-           {:name sym :ns 'js})
+       {:name sym :ns 'js}
        (let [s (str sym)
              lb (-> env :locals sym)]
          (cond
@@ -176,12 +174,9 @@
                  lb (-> env :locals prefix)]
              (if lb
                {:name (symbol (str (:name lb) suffix))}
-               (do
-                 (when confirm
-                   (confirm env prefix (symbol suffix)))
-                 (merge (get-in @namespaces [prefix :defs (symbol suffix)])
-                        {:name (if (= "" prefix) (symbol suffix) (symbol (str prefix) suffix))
-                         :ns prefix}))))
+               (merge (get-in @namespaces [prefix :defs (symbol suffix)])
+                 {:name (if (= "" prefix) (symbol suffix) (symbol (str prefix) suffix))
+                  :ns prefix})))
 
            (get-in @namespaces [(-> env :ns :name) :uses sym])
            (let [full-ns (get-in @namespaces [(-> env :ns :name) :uses sym])]
@@ -905,12 +900,10 @@
 (defn analyze-map
   [env form name]
   (let [expr-env (assoc env :context :expr)
-        simple-keys? (every? #(or (string? %) (keyword? %))
-                             (keys form))
         ks (disallowing-recur (vec (map #(analyze expr-env % name) (keys form))))
         vs (disallowing-recur (vec (map #(analyze expr-env % name) (vals form))))]
     (analyze-wrap-meta {:op :map :env env :form form
-                        :keys ks :vals vs :simple-keys? simple-keys?
+                        :keys ks :vals vs
                         :children (vec (interleave ks vs))}
                        name)))
 

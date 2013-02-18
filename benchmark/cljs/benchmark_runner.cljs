@@ -8,6 +8,10 @@
 
 (simple-benchmark [x 1] (identity x) 1000000)
 
+(println ";; symbol construction")
+(simple-benchmark [] (symbol 'foo) 1000000)
+(println)
+
 (println ";; array-reduce & ci-reduce")
 (def arr (let [arr (array)]
            (dotimes [i 1000000]
@@ -78,18 +82,45 @@
 (simple-benchmark [coll (into [] (range 1000000))] (apply + coll) 1)
 (println)
 
+(println ";;; obj-map")
+(simple-benchmark [coll (obj-map)] (assoc coll :foo :bar) 1000000)
+(simple-benchmark [coll (obj-map :foo :bar)] (-lookup coll :foo) 1000000)
+(simple-benchmark [coll (obj-map :foo :bar)] (assoc coll :baz :woz) 1000000)
+(simple-benchmark [coll (obj-map :foo :bar :baz :woz)] (-lookup coll :baz) 1000000)
+(simple-benchmark [coll (obj-map :foo :bar :baz :woz :lol :rofl)] (-lookup coll :lol) 1000000)
+(println)
+
+(println ";;; array-map")
+(simple-benchmark [coll (array-map)] (assoc coll :foo :bar) 1000000)
+(simple-benchmark [coll (array-map :foo :bar)] (-lookup coll :foo) 1000000)
+(simple-benchmark [coll (array-map :foo :bar)] (assoc coll :baz :woz) 1000000)
+(simple-benchmark [coll (array-map :foo :bar :baz :woz)] (-lookup coll :baz) 1000000)
+(simple-benchmark [coll (array-map :foo :bar :baz :woz :lol :rofl)] (-lookup coll :lol) 1000000)
+(println)
+
 (println ";;; map / record ops")
 (simple-benchmark [coll {:foo 1 :bar 2}] (get coll :foo) 1000000)
+(simple-benchmark [coll {'foo 1 'bar 2}] (get coll 'foo) 1000000)
 (simple-benchmark [coll {:foo 1 :bar 2}] (-lookup coll :foo nil) 1000000)
+(simple-benchmark [coll {'foo 1 'bar 2}] (-lookup coll 'foo nil) 1000000)
 (simple-benchmark [coll {:foo 1 :bar 2}] (:foo coll) 1000000)
+(simple-benchmark [coll {'foo 1 'bar 2}] ('foo coll) 1000000)
 (defrecord Foo [bar baz])
 (simple-benchmark [coll (Foo. 1 2)] (:bar coll) 1000000)
 (simple-benchmark [coll {:foo 1 :bar 2}] (assoc coll :baz 3) 100000)
+(simple-benchmark [coll {'foo 1 'bar 2}] (assoc coll 'baz 3) 100000)
 (simple-benchmark [coll {:foo 1 :bar 2}] (assoc coll :foo 2) 100000)
+(simple-benchmark [coll {'foo 1 'bar 2}] (assoc coll 'foo 2) 100000)
 (simple-benchmark [coll {:foo 1 :bar 2}]
                   (loop [i 0 m coll]
                     (if (< i 100000)
                       (recur (inc i) (assoc m :foo 2))
+                      m))
+                  1)
+(simple-benchmark [coll {'foo 1 'bar 2}]
+                  (loop [i 0 m coll]
+                    (if (< i 100000)
+                      (recur (inc i) (assoc m 'foo 2))
                       m))
                   1)
 (println ";;; persistent hash maps")
