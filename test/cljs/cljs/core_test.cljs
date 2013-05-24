@@ -231,6 +231,10 @@
   (assert (= [3 2 1] (seq (array 3 2 1))))
   (assert (= 9 (reduce + (next (seq (array 1 2 3 4))))))
   (assert (= () (rest nil)))
+  (assert (= nil (seq (array))))
+  (assert (= nil (seq "")))
+  (assert (= nil (seq [])))
+  (assert (= nil (seq {})))
   (assert (= () (rest ())))
   (assert (= () (rest [1])))
   (assert (= () (rest (array 1))))
@@ -259,24 +263,22 @@
   ;(assert (= "symbol\"'string" (pr-str (str 'symbol \" \' "string"))))
 
   (assert (not (= "one" "two")))
-  (assert (= 3 (-count "abc")))
-  (assert (= 4 (-count (array 1 2 3 4))))
-  (assert (= "c" (-nth "abc" 2)))
-  (assert (= "quux" (-nth "abc" 3 "quux")))
-  (assert (= 1 (-nth (array 1 2 3 4) 0)))
-  (assert (= "val" (-nth (array 1 2 3 4) 4 "val")))
-  (assert (= "b" (-lookup "abc" 1)))
-  (assert (= "harriet" (-lookup "abcd" 4 "harriet")))
-  (assert (= 4 (-lookup (array 1 2 3 4) 3)))
-  (assert (= "zot" (-lookup (array 1 2 3 4) 4 "zot")))
-  (assert (= 10 (-reduce (array 1 2 3 4) +)))
-  (assert (= 20 (-reduce (array 1 2 3 4) + 10)))
-  (assert (= "cabd" (let
-                        [jumble (fn [a b] (str (apply str (reverse (str a))) b))]
-                      (-reduce "abcd" jumble))))
-  (assert (= "cafrogbd" (let
-                            [jumble (fn [a b] (str (apply str (reverse (str a))) b))]
-                          (-reduce "abcd" jumble "frog"))))
+  (assert (= 3 (count "abc")))
+  (assert (= 4 (count (array 1 2 3 4))))
+  (assert (= "c" (nth "abc" 2)))
+  (assert (= "quux" (nth "abc" 3 "quux")))
+  (assert (= 1 (nth (array 1 2 3 4) 0)))
+  (assert (= "val" (nth (array 1 2 3 4) 4 "val")))
+  (assert (= "b" (get "abc" 1)))
+  (assert (= "harriet" (get "abcd" 4 "harriet")))
+  (assert (= 4 (get (array 1 2 3 4) 3)))
+  (assert (= "zot" (get (array 1 2 3 4) 4 "zot")))
+  (assert (= 10 (reduce + (array 1 2 3 4))))
+  (assert (= 20 (reduce + 10 (array 1 2 3 4))))
+  (assert (= "cabd" (let [jumble (fn [a b] (str (apply str (reverse (str a))) b))]
+                      (reduce jumble "abcd"))))
+  (assert (= "cafrogbd" (let [jumble (fn [a b] (str (apply str (reverse (str a))) b))]
+                          (reduce jumble "frog" "abcd"))))
   (assert (= [0 0 1 0 1]
                [(bit-and 1 0)
                 (bit-and 0 0)
@@ -670,7 +672,11 @@
     (assert (= (aget a 0 1) 2))
     (assert (= (apply aget a [0 1]) 2))
     (assert (= (aget a 1 1) 5))
-    (assert (= (apply aget a [1 1]) 5)))
+    (assert (= (apply aget a [1 1]) 5))
+    (aset a 0 0 "foo")
+    (assert (= (aget a 0 0) "foo"))
+    (apply aset a [0 0 "bar"])
+    (assert (= (aget a 0 0) "bar")))
 
   ;; sort
   (assert (= [1 2 3 4 5] (sort [5 3 1 4 2])))
@@ -691,6 +697,7 @@
   ;; js->clj
   (assert (= {"a" 1, "b" 2} (js->clj (js* "{\"a\":1,\"b\":2}"))))
   (assert (= {"a" nil} (js->clj (js* "{\"a\":null}"))))
+  (assert (= {} (js->clj (js* "{}"))))
   (assert (= {"a" true, "b" false} (js->clj (js* "{\"a\":true,\"b\":false}"))))
   (assert (= {:a 1, :b 2} (js->clj (js* "{\"a\":1,\"b\":2}") :keywordize-keys true)))
   (assert (= [[{:a 1, :b 2} {:a 1, :b 2}]]
@@ -1047,6 +1054,8 @@
     (assert (= :fail (try (subvec v2 6 10) (catch js/Error e :fail))))
     (assert (= :fail (try (subvec v2 6 10) (catch js/Error e :fail))))
     (assert (= :fail (try (subvec v2 3 6) (catch js/Error e :fail))))
+    ;; no layered subvecs
+    (assert (identical? v1 (.-v (subvec s 1 4))))
     )
 
   ;; TransientVector
@@ -1730,15 +1739,7 @@
   ;;; pr-str records
 
   (defrecord PrintMe [a b])
-  (assert (= (pr-str (PrintMe. 1 2)) "#PrintMe{:a 1, :b 2}"))
-
-  ;;; pr-str backwards compatibility
-
-  (deftype PrintMeBackwardsCompat [a b]
-    IPrintable
-    (-pr-seq [_ _] (list (str "<<<" a " " b ">>>"))))
-
-  (assert (= (pr-str (PrintMeBackwardsCompat. 1 2)) "<<<1 2>>>"))
+  (assert (= (pr-str (PrintMe. 1 2)) "#cljs.core-test.PrintMe{:a 1, :b 2}"))
 
   ;;; pr-str inst
 
@@ -1804,6 +1805,7 @@
     (kvr-test (hash-map :k0 :v0 :k1 :v1) [:k0 :v0 :k1 :v1])
     (kvr-test (array-map :k0 :v0 :k1 :v1) [:k0 :v0 :k1 :v1])
     (kvr-test [:v0 :v1] [0 :v0 1 :v1]))
+  (assert (= {:init :val} (reduce-kv assoc {:init :val} nil)))
 
   ;; data conveying exception
   (assert (= {:foo 1}
@@ -1830,6 +1832,68 @@
   ;; symbol metadata
 
   (assert (= (meta (with-meta 'foo {:tag 'int})) {:tag 'int}))
+
+  ;; CLJS-467
+
+  (assert (= (reduce-kv + 0 (apply hash-map (range 1000)))
+             (reduce + (range 1000))))
+
+  ;; CLJS-477
+
+  (assert (= [js/undefined 1 2] ((fn [& more] more) js/undefined 1 2)))
+  (assert (= [js/undefined 4 5] ((fn [a b & more] more) 1 2 js/undefined 4 5)))
+
+  ;; CLJS-493
+
+  (assert (nil? (get 42 :anything)))
+  (assert (identical? (get 42 :anything :not-found) :not-found))
+  (assert (nil? (first (map get [42] [:anything]))))
+  (assert (identical? (first (map get [42] [:anything] [:not-found])) :not-found))
+
+  ;; CLJS-481
+
+  (let [fs (atom [])]
+    (doseq [x (range 4)
+            :let [y (inc x)
+                  f (fn [] y)]]
+      (swap! fs conj f))
+    (assert (= (map #(%) @fs) '(1 2 3 4))))
+
+  ;; CLJS-495
+  (assert (false? (exists? js/jQuery)))
+  (def exists?-test-val 'foo)
+  (assert (exists? exists?-test-val))
+
+  ;; CLJS-496
+  (assert (= (char 65) \A))
+  (assert (= (char \A) \A))
+
+  ;; compile time run symbol hash codes
+  
+  (assert (= (hash 'foo) (hash (symbol "foo"))))
+  (assert (= (hash 'foo/bar) (hash (symbol "foo" "bar"))))
+
+  (assert (= (lazy-cat [1] [2] [3]) '(1 2 3)))
+
+  ;; r1798 core fn protocol regression
+  (extend-type object
+    ISeqable
+    (-seq [coll]
+      (map #(vector % (aget coll %)) (js-keys coll)))
+
+    ILookup
+    (-lookup
+      ([coll k]
+        (-lookup coll k nil))
+      ([coll k not-found]
+        (if-let [v (aget coll k)]
+          v
+          not-found))))
+
+  (assert (= (seq (js-obj "foo" 1 "bar" 2)) '(["foo" 1] ["bar" 2])))
+  (assert (= (get (js-obj "foo" 1) "foo") 1))
+  (assert (= (get (js-obj "foo" 1) "bar" ::not-found) ::not-found))
+  (assert (= (reduce (fn [s [k v]] (+ s v)) 0 (js-obj "foo" 1 "bar" 2)) 3))
 
   :ok
   )

@@ -33,10 +33,17 @@
     "volatile" "while" "with" "yield" "methods"
     "null"})
 
-(def ^:dynamic *position* nil)
+(def ^:dynamic *cljs-source-map* nil)
+(def ^:dynamic *cljs-gen-col* nil)
+(def ^:dynamic *cljs-gen-line* nil)
+
 (def ^:dynamic *emitted-provides* nil)
 (def ^:dynamic *lexical-renames* {})
 (def cljs-reserved-file-names #{"deps.cljs"})
+
+(defmacro ^:private debug-prn
+  [& args]
+  `(.println System/err (str ~@args)))
 
 (defonce ns-first-segments (atom '#{"cljs" "clojure"}))
 
@@ -101,16 +108,14 @@
 (defn emits [& xs]
   (doseq [x xs]
     (cond
-      (nil? x) nil
-      (map? x) (emit x)
-      (seq? x) (apply emits x)
-      (fn? x)  (x)
-      :else (do
-              (let [s (print-str x)]
-                (when *position*
-                  (swap! *position* (fn [[line column]]
-                                      [line (+ column (count s))])))
-                (print s)))))
+     (nil? x) nil
+     (map? x) (emit x)
+     (seq? x) (apply emits x)
+     (fn? x)  (x)
+     :else (let [s (print-str x)]
+             (when *cljs-gen-col*
+               (swap! *cljs-gen-col* (fn [col] (+ col (count s)))))
+             (print s))))
   nil)
 
 (defn ^String emit-str [expr]
@@ -118,14 +123,11 @@
 
 (defn emitln [& xs]
   (apply emits xs)
-  ;; Prints column-aligned line number comments; good test of *position*.
-  ;(when *position*
-  ;  (let [[line column] @*position*]
-  ;    (print (apply str (concat (repeat (- 120 column) \space) ["// " (inc line)])))))
   (println)
-  (when *position*
-    (swap! *position* (fn [[line column]]
-                        [(inc line) 0])))
+  (when *cljs-gen-line*
+    (swap! *cljs-gen-line* inc))
+  (when *cljs-gen-col*
+    (reset! *cljs-gen-col* 0))
   nil)
 
 (defn ^String emit-str [expr]
@@ -158,56 +160,33 @@
                   (name x)
                   \"))
 
-;; TODO: we could optimize, call type constructor & inline all the properties of x - David
+(def ^:const goog-hash-max 0x100000000)
+
+(defn goog-string-hash [s]
+  (reduce
+    (fn [r c]
+      (mod (+ (* 31 r) (int c)) goog-hash-max))
+    0 s))
 
 (defmethod emit-constant clojure.lang.Symbol [x]
-  (emits "cljs.core.symbol(")
-  (emit-constant (namespace x))
-  (emits ",")
-  (emit-constant (name x))
-  (emits ")"))
-
-(defn- emit-meta-constant [x & body]
-  (if (meta x)
-    (do
-      (emits "cljs.core.with_meta(" body ",")
-      (emit-constant (meta x))
-      (emits ")"))
-    (emits body)))
-
-(defmethod emit-constant clojure.lang.PersistentList$EmptyList [x]
-  (emit-meta-constant x "cljs.core.List.EMPTY"))
-
-(defmethod emit-constant clojure.lang.PersistentList [x]
-  (emit-meta-constant x
-    (concat ["cljs.core.list("]
-            (comma-sep (map #(fn [] (emit-constant %)) x))
-            [")"])))
-
-(defmethod emit-constant clojure.lang.Cons [x]
-  (emit-meta-constant x
-    (concat ["cljs.core.list("]
-            (comma-sep (map #(fn [] (emit-constant %)) x))
-            [")"])))
-
-(defmethod emit-constant clojure.lang.IPersistentVector [x]
-  (emit-meta-constant x
-    (concat ["cljs.core.vec(["]
-            (comma-sep (map #(fn [] (emit-constant %)) x))
-            ["])"])))
-
-(defmethod emit-constant clojure.lang.IPersistentMap [x]
-  (emit-meta-constant x
-    (concat ["cljs.core.hash_map("]
-            (comma-sep (map #(fn [] (emit-constant %))
-                            (apply concat x)))
-            [")"])))
-
-(defmethod emit-constant clojure.lang.PersistentHashSet [x]
-  (emit-meta-constant x
-    (concat ["cljs.core.set(["]
-            (comma-sep (map #(fn [] (emit-constant %)) x))
-            ["])"])))
+  (let [ns     (namespace x)
+        name   (name x)
+        symstr (if-not (nil? ns)
+                 (str ns "/" name)
+                 name)]
+    (emits "new cljs.core.Symbol(")
+    (emit-constant ns)
+    (emits ",")
+    (emit-constant name)
+    (emits ",")
+    (emit-constant symstr)
+    (emits ",")
+    (emit-constant (clojure.lang.Util/hashCombine
+                     (unchecked-int (goog-string-hash ns))
+                     (unchecked-int (goog-string-hash name))))
+    (emits ",")
+    (emit-constant nil)
+    (emits ")")))
 
 (defmacro emit-wrap [env & body]
   `(let [env# ~env]
@@ -219,20 +198,33 @@
 
 (defmethod emit :var
   [{:keys [info env] :as arg}]
-  (let [n (:name info)
-        n (if (= (namespace n) "js")
-            (name n)
-            info)]
+  (let [var-name (:name info)
+        info (if (= (namespace var-name) "js")
+               (name var-name)
+               info)]
+    (when *cljs-source-map*
+      (when (and (:line env) (symbol? var-name))
+        (let [{:keys [line column]} env]
+          (swap! *cljs-source-map*
+            (fn [m]
+              (let [minfo {:gcol  @*cljs-gen-col*
+                           :gline @*cljs-gen-line*
+                           :name  var-name}]
+                (update-in m [line]
+                  (fnil (fn [m]
+                          (update-in m [(or column 0)]
+                            (fnil (fn [v] (conj v minfo)) [])))
+                    (sorted-map)))))))))
     (when-not (= :statement (:context env))
-      (emit-wrap env (emits (munge n))))))
+      (emit-wrap env (emits (munge info))))))
 
 (defmethod emit :meta
   [{:keys [expr meta env]}]
   (emit-wrap env
     (emits "cljs.core.with_meta(" expr "," meta ")")))
 
-(def ^:private array-map-threshold 16)
-(def ^:private obj-map-threshold 32)
+(def ^:private array-map-threshold 8)
+(def ^:private obj-map-threshold 8)
 
 (defmethod emit :map
   [{:keys [env keys vals]}]
@@ -240,23 +232,12 @@
     (emit-wrap env
       (cond
         (zero? (count keys))
-        (emits "cljs.core.ObjMap.EMPTY")
-
-        (and simple-keys? (<= (count keys) obj-map-threshold))
-        (emits "cljs.core.ObjMap.fromObject(["
-               (comma-sep keys)          ; keys
-               "],{"
-               (comma-sep (map (fn [k v]
-                                 (with-out-str (emit k) (print ":") (emit v)))
-                               keys vals)) ; js obj
-               "})")
+        (emits "cljs.core.PersistentArrayMap.EMPTY")
 
         (<= (count keys) array-map-threshold)
-        (emits "cljs.core.PersistentArrayMap.fromArrays(["
-               (comma-sep keys)
-               "],["
-               (comma-sep vals)
-               "])")
+        (emits "cljs.core.PersistentArrayMap.fromArray(["
+               (comma-sep (interleave keys vals))
+               "], true)")
 
         :else
         (emits "cljs.core.PersistentHashMap.fromArrays(["
@@ -264,6 +245,13 @@
                "],["
                (comma-sep vals)
                "])")))))
+
+(defmethod emit :list
+  [{:keys [items env]}]
+  (emit-wrap env
+    (if (empty? items)
+      (emits "cljs.core.List.EMPTY")
+      (emits "cljs.core.list(" (comma-sep items) ")"))))
 
 (defmethod emit :vector
   [{:keys [items env]}]
@@ -284,7 +272,7 @@
     (if (empty? items)
       (emits "cljs.core.PersistentHashSet.EMPTY")
       (emits "cljs.core.PersistentHashSet.fromArray(["
-             (comma-sep items) "])"))))
+             (comma-sep (interleave items (repeat "null"))) "], true)"))))
 
 (defmethod emit :constant
   [{:keys [form env]}]
@@ -293,13 +281,15 @@
 
 (defn get-tag [e]
   (or (-> e :tag)
-      (-> e :info :tag)))
+      (-> e :info :tag)
+      (-> e :form meta :tag)))
 
 (defn infer-tag [e]
   (if-let [tag (get-tag e)]
     tag
     (case (:op e)
-      :let (infer-tag (:ret e))
+      :let (infer-tag (:expr e))
+      :do  (infer-tag (:ret e))
       :if (let [then-tag (infer-tag (:then e))
                 else-tag (infer-tag (:else e))]
             (when (= then-tag else-tag)
@@ -353,16 +343,18 @@
         (emitln "*/")))))
 
 (defmethod emit :def
-  [{:keys [name init env doc export]}]
+  [{:keys [name var init env doc export]}]
   (let [mname (munge name)]
-    (emit-comment doc (:jsdoc init))
-    (emits mname)
-    (if init
+    (when init
+      (emit-comment doc (:jsdoc init))
+      (emits var)
       (emits " = " init)
-      (emits " = undefined"))
-    (when-not (= :expr (:context env)) (emitln ";"))
-    (when export
-      (emitln "goog.exportSymbol('" (munge export) "', " mname ");"))))
+      ;; NOTE: JavaScriptCore does not like this under advanced compilation
+      ;; this change was primarily for REPL interactions - David
+      ;(emits " = (typeof " mname " != 'undefined') ? " mname " : undefined")
+      (when-not (= :expr (:context env)) (emitln ";"))
+      (when export
+        (emitln "goog.exportSymbol('" (munge export) "', " mname ");")))))
 
 (defn emit-apply-to
   [{:keys [name params env]}]
@@ -370,24 +362,17 @@
         delegate-name (str (munge name) "__delegate")
         params (map munge params)]
     (emitln "(function (" arglist "){")
-    (doseq [[i param] (map-indexed vector (butlast params))]
+    (doseq [[i param] (map-indexed vector (drop-last 2 params))]
       (emits "var " param " = cljs.core.first(")
-      (dotimes [_ i] (emits "cljs.core.next("))
-      (emits arglist ")")
-      (dotimes [_ i] (emits ")"))
-      (emitln ";"))
+      (emitln arglist ");")
+      (emitln arglist " = cljs.core.next(" arglist ");"))
     (if (< 1 (count params))
       (do
-        (emits "var " (last params) " = cljs.core.rest(")
-        (dotimes [_ (- (count params) 2)] (emits "cljs.core.next("))
-        (emits arglist)
-        (dotimes [_ (- (count params) 2)] (emits ")"))
-        (emitln ");")
+        (emitln "var " (last (butlast params)) " = cljs.core.first(" arglist ");")
+        (emitln "var " (last params) " = cljs.core.rest(" arglist ");")
         (emitln "return " delegate-name "(" (string/join ", " params) ");"))
       (do
-        (emits "var " (last params) " = ")
-        (emits "cljs.core.seq(" arglist ");")
-        (emitln ";")
+        (emitln "var " (last params) " = cljs.core.seq(" arglist ");")
         (emitln "return " delegate-name "(" (string/join ", " params) ");")))
     (emits "})")))
 
@@ -428,7 +413,7 @@
                  (emitln "var self__ = this;"))
                (when variadic
                  (emitln "var " (last params) " = null;")
-                 (emitln "if (goog.isDef(var_args)) {")
+                 (emitln "if (arguments.length > " (dec (count params)) ") {")
                  (emitln "  " (last params) " = cljs.core.array_seq(Array.prototype.slice.call(arguments, " (dec (count params)) "),0);")
                  (emitln "} "))
                (emitln "return " delegate-name ".call(" (string/join ", " (cons "this" params)) ");")
@@ -438,7 +423,7 @@
                (emits mname ".cljs$lang$applyTo = ")
                (emit-apply-to (assoc f :name name))
                (emitln ";")
-               (emitln mname ".cljs$lang$arity$variadic = " delegate-name ";")
+               (emitln mname ".cljs$core$IFn$_invoke$arity$variadic = " delegate-name ";")
                (emitln "return " mname ";")
                (emitln "})()"))))
 
@@ -489,7 +474,7 @@
           (doseq [[n meth] ms]
             (if (:variadic meth)
               (do (emitln "default:")
-                  (emitln "return " n ".cljs$lang$arity$variadic("
+                  (emitln "return " n ".cljs$core$IFn$_invoke$arity$variadic("
                           (comma-sep (butlast maxparams))
                           (when (> (count maxparams) 1) ", ")
                           "cljs.core.array_seq(arguments, " max-fixed-arity "));"))
@@ -507,8 +492,8 @@
             (doseq [[n meth] ms]
               (let [c (count (:params meth))]
                 (if (:variadic meth)
-                  (emitln mname ".cljs$lang$arity$variadic = " n ".cljs$lang$arity$variadic;")
-                  (emitln mname ".cljs$lang$arity$" c " = " n ";")))))
+                  (emitln mname ".cljs$core$IFn$_invoke$arity$variadic = " n ".cljs$core$IFn$_invoke$arity$variadic;")
+                  (emitln mname ".cljs$core$IFn$_invoke$arity$" c " = " n ";")))))
           (emitln "return " mname ";")
           (emitln "})()")))
       (when loop-locals
@@ -629,7 +614,7 @@
              ;; direct dispatch to variadic case
              (and variadic? (> arity mfa))
              [(update-in f [:info :name]
-                             (fn [name] (symbol (str (munge name) ".cljs$lang$arity$variadic"))))
+                             (fn [name] (symbol (str (munge name) ".cljs$core$IFn$_invoke$arity$variadic"))))
               {:max-fixed-arity mfa}]
 
              ;; direct dispatch to specific arity case
@@ -637,7 +622,7 @@
              (let [arities (map count mps)]
                (if (some #{arity} arities)
                  [(update-in f [:info :name]
-                             (fn [name] (symbol (str (munge name) ".cljs$lang$arity$" arity)))) nil]
+                             (fn [name] (symbol (str (munge name) ".cljs$core$IFn$_invoke$arity$" arity)))) nil]
                  [f nil]))))
           [f nil])]
     (emit-wrap env
@@ -664,7 +649,7 @@
        
        :else
        (if (and ana/*cljs-static-fns* (= (:op f) :var))
-         (let [fprop (str ".cljs$lang$arity$" (count args))]
+         (let [fprop (str ".cljs$core$IFn$_invoke$arity$" (count args))]
            (emits "(" f fprop " ? " f fprop "(" (comma-sep args) ") : " f ".call(" (comma-sep (cons "null" args)) "))"))
          (emits f ".call(" (comma-sep (cons "null" args)) ")"))))))
 
@@ -777,29 +762,38 @@
          (ana/analyze-file "cljs/core.cljs"))
        ~@body))
 
-(defn compile-file* [src dest]
-  (with-core-cljs
-    (with-open [out ^java.io.Writer (io/make-writer dest {})]
-      (binding [*out* out
-                ana/*cljs-ns* 'cljs.user
-                ana/*cljs-file* (.getPath ^java.io.File src)
-                *data-readers* tags/*cljs-data-readers*
-                *position* (atom [0 0])
-                *emitted-provides* (atom #{})]
-        (loop [forms (forms-seq src)
-               ns-name nil
-               deps nil]
-          (if (seq forms)
-            (let [env (ana/empty-env)
-                  ast (ana/analyze env (first forms))]
-              (do (emit ast)
-                  (if (= (:op ast) :ns)
-                    (recur (rest forms) (:name ast) (merge (:uses ast) (:requires ast)))
-                    (recur (rest forms) ns-name deps))))
-            {:ns (or ns-name 'cljs.user)
-             :provides [ns-name]
-             :requires (if (= ns-name 'cljs.core) (set (vals deps)) (conj (set (vals deps)) 'cljs.core))
-             :file dest}))))))
+(defn compile-file*
+  ([src dest] (compile-file* src dest nil))
+  ([src dest opts]
+     (with-core-cljs
+       (with-open [out ^java.io.Writer (io/make-writer dest {})]
+         (binding [*out* out
+                   ana/*cljs-ns* 'cljs.user
+                   ana/*cljs-file* (.getPath ^java.io.File src)
+                   *data-readers* tags/*cljs-data-readers*
+                   *emitted-provides* (atom #{})
+                   *cljs-source-map* (when (:source-map opts) (atom (sorted-map)))
+                   *cljs-gen-line* (atom 0)
+                   *cljs-gen-col* (atom 0)]
+           (loop [forms (forms-seq src)
+                  ns-name nil
+                  deps nil]
+             (if (seq forms)
+               (let [env (ana/empty-env)
+                     ast (ana/analyze env (first forms))]
+                 (do (emit ast)
+                     (if (= (:op ast) :ns)
+                       (recur (rest forms) (:name ast) (merge (:uses ast) (:requires ast)))
+                       (recur (rest forms) ns-name deps))))
+               (merge
+                 {:ns (or ns-name 'cljs.user)
+                  :provides [ns-name]
+                  :requires (if (= ns-name 'cljs.core) (set (vals deps)) (conj (set (vals deps)) 'cljs.core))
+                  :file dest
+                  :source-file src
+                  :lines @*cljs-gen-line*}
+                 (when (:source-map opts)
+                   {:source-map @*cljs-source-map*})))))))))
 
 (defn requires-compilation?
   "Return true if the src file requires compilation."
@@ -807,7 +801,7 @@
   (or (not (.exists dest))
       (> (.lastModified src) (.lastModified dest))))
 
-(defn parse-ns [src dest]
+(defn parse-ns [src dest opts]
   (with-core-cljs
     (binding [ana/*cljs-ns* 'cljs.user]
       (loop [forms (forms-seq src)]
@@ -822,7 +816,9 @@
                  :requires (if (= ns-name 'cljs.core)
                              (set (vals deps))
                              (conj (set (vals deps)) 'cljs.core))
-                 :file dest})
+                 :file dest
+                 :source-file src
+                 :lines (-> dest io/reader line-seq count)})
               (recur (rest forms)))))))))
 
 (defn compile-file
@@ -839,17 +835,22 @@
    Returns a map containing {:ns .. :provides .. :requires .. :file ..}.
    If the file was not compiled returns only {:file ...}"
   ([src]
-     (let [dest (rename-to-js src)]
-       (compile-file src dest)))
+    (let [dest (rename-to-js src)]
+      (compile-file src dest nil)))
   ([src dest]
-     (let [src-file (io/file src)
+    (compile-file src dest nil))
+  ([src dest opts]
+    (let [src-file (io/file src)
            dest-file (io/file dest)]
-       (if (.exists src-file)
-         (if (requires-compilation? src-file dest-file)
-           (do (mkdirs dest-file)
-               (compile-file* src-file dest-file))
-           (parse-ns src-file dest-file))
-         (throw (java.io.FileNotFoundException. (str "The file " src " does not exist.")))))))
+      (if (.exists src-file)
+        (try
+          (if (or (requires-compilation? src-file dest-file) (:source-map opts))
+            (do (mkdirs dest-file)
+              (compile-file* src-file dest-file opts))
+            (parse-ns src-file dest-file opts))
+          (catch Exception e
+            (throw (ex-info (str "failed compiling file:" src) {:file src} e))))
+        (throw (java.io.FileNotFoundException. (str "The file " src " does not exist.")))))))
 
 (comment
   ;; flex compile-file
@@ -902,13 +903,15 @@
   ([src-dir]
      (compile-root src-dir "out"))
   ([src-dir target-dir]
+     (compile-root src-dir target-dir nil))
+  ([src-dir target-dir opts]
      (let [src-dir-file (io/file src-dir)]
        (loop [cljs-files (cljs-files-in src-dir-file)
               output-files []]
          (if (seq cljs-files)
            (let [cljs-file (first cljs-files)
                  output-file ^java.io.File (to-target-file src-dir-file target-dir cljs-file)
-                 ns-info (compile-file cljs-file output-file)]
+                 ns-info (compile-file cljs-file output-file opts)]
              (recur (rest cljs-files) (conj output-files (assoc ns-info :file-name (.getPath output-file)))))
            output-files)))))
 

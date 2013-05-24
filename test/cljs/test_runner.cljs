@@ -8,20 +8,23 @@
             [cljs.macro-test :as macro-test]
             [cljs.letfn-test :as letfn-test]
             [foo.ns-shadow-test :as ns-shadow-test]
-            [cljs.top-level :as top-level]))
+            [cljs.top-level :as top-level]
+            [cljs.reducers-test :as reducers-test]))
 
-(set! *print-fn* js/print)
+(set-print-fn! js/print)
 
 (core-test/test-stuff)
 (reader-test/test-reader)
 (string-test/test-string)
 (data-test/test-data)
 (binding-test/test-binding)
+(binding-test/test-with-redefs)
 (ns-test/test-ns)
 (macro-test/test-macros)
 (letfn-test/test-letfn)
 (ns-shadow-test/test-shadow)
 (top-level/test)
+(reducers-test/test-all)
 
 (println "Tests completed without exception")
 
