@@ -3043,7 +3043,7 @@ reduces them without incurring seq initialization"
 
 (deftype ArrayVector [meta arr ^:mutable __hash]
   Object
-  (toString [this] (pr-str this))
+  (toString [this] (pr-str* this))
 
   IWithMeta
   (-with-meta [coll meta]
