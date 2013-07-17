@@ -3,15 +3,15 @@
 /.DS_Store
 /classes
 /lib
+/target
 closure
 /core.js
 /coreadvanced.js
 /coresimple.js
 /out
-/target
+/pom.xml
 .repl
 *.swp
 *.zip
 clojurescript_release_*
 closure-release-*
-pom.xml

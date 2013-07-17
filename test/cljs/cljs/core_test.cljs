@@ -220,6 +220,11 @@
   ; symbol
   (assert (= 'a (symbol 'a)))
 
+  ; keyword
+  (assert (= :a (keyword "a")))
+  (assert (= :a (keyword 'a)))
+  (assert (= :a/b (keyword 'a 'b)))
+
   ;; format
   (assert (= "01: 2.000000" (format "%02d: %.6f" 1 2)))
 
@@ -1029,6 +1034,10 @@
     (assert (= 95 (peek stack1)))
     (assert (= 94 (peek stack2))))
 
+  ;; CLJS-513
+  (let [sentinel (js-obj)]
+    (assert (identical? sentinel (try ([] 0) (catch js/Error _ sentinel)))))
+
   ;; subvec
   (let [v1 (vec (range 10))
         v2 (vec (range 5))
@@ -1056,6 +1065,11 @@
     (assert (= :fail (try (subvec v2 3 6) (catch js/Error e :fail))))
     ;; no layered subvecs
     (assert (identical? v1 (.-v (subvec s 1 4))))
+    ;; CLJS-513
+    (let [sentinel (js-obj)
+          s (subvec [0 1 2 3] 1 2)]
+      (assert (identical? sentinel (try (s -1) (catch js/Error _ sentinel))))
+      (assert (identical? sentinel (try (s 1) (catch js/Error _ sentinel)))))  
     )
 
   ;; TransientVector
@@ -1658,7 +1672,10 @@
     (assert (= (map inc r) (map inc v)))
     (assert (= (filter even? r) (filter even? v)))
     (assert (= (filter odd? r) (filter odd? v)))
-    (assert (= (concat r r r) (concat v v v))))
+    (assert (= (concat r r r) (concat v v v)))
+    (assert (satisfies? IReduce (seq v)))
+    (assert (== 2010 (reduce + (nnext (nnext (seq v))))))
+    (assert (== 2020 (reduce + 10 (nnext (nnext (seq v)))))))
 
   ;; INext
 
@@ -1894,6 +1911,23 @@
   (assert (= (get (js-obj "foo" 1) "foo") 1))
   (assert (= (get (js-obj "foo" 1) "bar" ::not-found) ::not-found))
   (assert (= (reduce (fn [s [k v]] (+ s v)) 0 (js-obj "foo" 1 "bar" 2)) 3))
+
+  ;; CLJS-515
+  (deftype PositionalFactoryTest [x])
+
+  (assert (== 1 (.-x (->PositionalFactoryTest 1))))
+
+  ;; CLJS-518
+  (assert (nil? (:test "test")))
+
+  ;; CLJS-541
+  (letfn [(f! [x] (print \f) x)
+          (g! [x] (print \g) x)]
+    (assert (== "ffgfg"
+                (with-out-str
+                  (instance? Symbol (f! 'foo))
+                  (max (f! 5) (g! 10))
+                  (min (f! 5) (g! 10))))))
 
   :ok
   )

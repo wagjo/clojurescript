@@ -218,6 +218,7 @@
 
 ;; internal - do not use.
 (defmacro truth_ [x]
+  (assert (clojure.core/symbol? x) "x is substituted twice")
   (list 'js* "(~{} != null && ~{} !== false)" x x))
 
 ;; internal - do not use
@@ -246,7 +247,13 @@
   (bool-expr (list 'js* "(~{} === ~{})" a b)))
 
 (defmacro instance? [t o]
-  (bool-expr (list 'js* "(~{} instanceof ~{})" o t)))
+  ;; Google Closure warns about some references to RegExp, so
+  ;; (instance? RegExp ...) needs to be inlined, but the expansion
+  ;; should preserve the order of argument evaluation.
+  (bool-expr (if (clojure.core/symbol? t)
+               (list 'js* "(~{} instanceof ~{})" o t)
+               `(let [t# ~t o# ~o]
+                  (~'js* "(~{} instanceof ~{})" o# t#)))))
 
 (defmacro number? [x]
   (bool-expr (list 'js* "typeof ~{} === 'number'" x)))
@@ -391,12 +398,14 @@
 
 (defmacro max
   ([x] x)
-  ([x y] (list 'js* "((~{} > ~{}) ? ~{} : ~{})" x y x y))
+  ([x y] `(let [x# ~x, y# ~y]
+            (~'js* "((~{} > ~{}) ? ~{} : ~{})" x# y# x# y#)))
   ([x y & more] `(max (max ~x ~y) ~@more)))
 
 (defmacro min
   ([x] x)
-  ([x y] (list 'js* "((~{} < ~{}) ? ~{} : ~{})" x y x y))
+  ([x y] `(let [x# ~x, y# ~y]
+            (~'js* "((~{} < ~{}) ? ~{} : ~{})" x# y# x# y#)))
   ([x y & more] `(min (min ~x ~y) ~@more)))
 
 (defmacro js-mod [num div]
@@ -460,6 +469,7 @@
 
 ;; internal
 (defmacro caching-hash [coll hash-fn hash-key]
+  (assert (clojure.core/symbol? hash-key) "hash-key is substituted twice")
   `(let [h# ~hash-key]
      (if-not (nil? h#)
        h#
@@ -551,13 +561,13 @@
                             (drop-while seq? (next s)))
                      ret))
         warn-if-not-protocol #(when-not (= 'Object %)
-                                (if cljs.analyzer/*cljs-warn-on-undeclared*
+                                (if (:undeclared cljs.analyzer/*cljs-warnings*)
                                   (if-let [var (cljs.analyzer/resolve-existing-var (dissoc &env :locals) %)]
                                     (do
                                      (when-not (:protocol-symbol var)
                                        (cljs.analyzer/warning &env
                                          (core/str "WARNING: Symbol " % " is not a protocol")))
-                                     (when (and cljs.analyzer/*cljs-warn-protocol-deprecated*
+                                     (when (and (:protocol-deprecated cljs.analyzer/*cljs-warnings*)
                                                 (-> var :deprecated)
                                                 (not (-> % meta :deprecation-nowarn)))
                                        (cljs.analyzer/warning &env
@@ -675,6 +685,13 @@
       (map #(:name (cljs.analyzer/resolve-var (dissoc env :locals) %)))
       (into #{})))
 
+(defn- build-positional-factory
+  [rsym rname fields]
+  (let [fn-name (symbol (core/str '-> rsym))]
+    `(defn ~fn-name
+       [~@fields]
+       (new ~rname ~@fields))))
+
 (defmacro deftype [t fields & impls]
   (let [r (:name (cljs.analyzer/resolve-var (dissoc &env :locals) t))
         [fpps pmasks] (prepare-protocol-masks &env t impls)
@@ -689,12 +706,14 @@
          (set! (.-cljs$lang$ctorStr ~t) ~(core/str r))
          (set! (.-cljs$lang$ctorPrWriter ~t) (fn [this# writer# opt#] (-write writer# ~(core/str r))))
          (extend-type ~t ~@(dt->et t impls fields true))
+         ~(build-positional-factory t r fields)
          ~t)
       `(do
          (deftype* ~t ~fields ~pmasks)
          (set! (.-cljs$lang$type ~t) true)
          (set! (.-cljs$lang$ctorStr ~t) ~(core/str r))
          (set! (.-cljs$lang$ctorPrWriter ~t) (fn [this# writer# opts#] (-write writer# ~(core/str r))))
+         ~(build-positional-factory t r fields)
          ~t))))
 
 (defn- emit-defrecord
@@ -772,13 +791,6 @@
       `(do
          (~'defrecord* ~tagname ~hinted-fields ~pmasks)
          (extend-type ~tagname ~@(dt->et tagname impls fields true))))))
-
-(defn- build-positional-factory
-  [rsym rname fields]
-  (let [fn-name (symbol (core/str '-> rsym))]
-    `(defn ~fn-name
-       [~@fields]
-       (new ~rname ~@fields))))
 
 (defn- build-map-factory
   [rsym rname fields]

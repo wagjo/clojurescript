@@ -15,18 +15,21 @@
             [cljs.tagged-literals :as tags])
   (:import java.lang.StringBuilder))
 
-(declare resolve-var)
-(declare resolve-existing-var)
-(declare warning)
-(def ^:dynamic *cljs-warn-on-undeclared* false)
-(declare confirm-bindings)
-(declare ^:dynamic *cljs-file*)
+(def ^:dynamic *cljs-ns* 'cljs.user)
+(def ^:dynamic *cljs-file* nil)
+(def ^:dynamic *unchecked-if* (atom false))
+(def ^:dynamic *cljs-static-fns* false)
+(def ^:dynamic *cljs-macros-path* "/cljs/core")
+(def ^:dynamic *cljs-macros-is-classpath* true)
+(def -cljs-macros-loaded (atom false))
 
-;; to resolve keywords like ::foo - the namespace
-;; must be determined during analysis - the reader
-;; did not know
-(def ^:dynamic *reader-ns-name* (gensym))
-(def ^:dynamic *reader-ns* (create-ns *reader-ns-name*))
+(def ^:dynamic *cljs-warnings*
+  {:undeclared false
+   :redef true
+   :dynamic true
+   :fn-var true
+   :fn-deprecated true
+   :protocol-deprecated true})
 
 (defonce namespaces (atom '{cljs.core {:name cljs.core}
                             cljs.user {:name cljs.user}}))
@@ -42,27 +45,14 @@
 (defn set-namespace [key val]
   (swap! namespaces assoc key val))
 
-(def ^:dynamic *cljs-ns* 'cljs.user)
-(def ^:dynamic *cljs-file* nil)
-(def ^:dynamic *cljs-warn-on-redef* true)
-(def ^:dynamic *cljs-warn-on-dynamic* true)
-(def ^:dynamic *cljs-warn-on-fn-var* true)
-(def ^:dynamic *cljs-warn-fn-arity* true)
-(def ^:dynamic *cljs-warn-fn-deprecated* true)
-(def ^:dynamic *cljs-warn-protocol-deprecated* true)
-(def ^:dynamic *unchecked-if* (atom false))
-(def ^:dynamic *cljs-static-fns* false)
-(def ^:dynamic *cljs-macros-path* "/cljs/core")
-(def ^:dynamic *cljs-macros-is-classpath* true)
-(def  -cljs-macros-loaded (atom false))
-
 (defmacro no-warn [& body]
-  `(binding [*cljs-warn-on-undeclared* false
-             *cljs-warn-on-redef* false
-             *cljs-warn-on-dynamic* false
-             *cljs-warn-on-fn-var* false
-             *cljs-warn-fn-arity* false
-             *cljs-warn-fn-deprecated* false]
+  `(binding [*cljs-warnings*
+             {:redef false
+              :dynamic false
+              :fn-arity false
+              :fn-var false
+              :fn-deprecated false
+              :protocol-deprecated false}]
      ~@body))
 
 (defn get-line [x env]
@@ -140,7 +130,7 @@
          (throw (error ~env (.getMessage err#) err#))))))
 
 (defn confirm-var-exists [env prefix suffix]
-  (when *cljs-warn-on-undeclared*
+  (when (:undeclared *cljs-warnings*)
     (let [crnt-ns (-> env :ns :name)]
       (when (= prefix crnt-ns)
         (when-not (-> @namespaces crnt-ns :defs suffix)
@@ -217,7 +207,7 @@
   (doseq [name names]
     (let [env (merge env {:ns (@namespaces *cljs-ns*)})
           ev (resolve-existing-var env name)]
-      (when (and *cljs-warn-on-dynamic*
+      (when (and (:dynamic *cljs-warnings*)
                  ev (not (-> ev :dynamic)))
         (warning env
           (str "WARNING: " (:name ev) " not declared ^:dynamic"))))))
@@ -235,9 +225,7 @@
 (defn analyze-keyword
     [env sym]
     {:op :constant :env env
-     :form (if (= (namespace sym) (name *reader-ns-name*))
-               (keyword (-> env :ns :name name) (name sym))
-               sym)})
+     :form sym})
 
 (defmulti parse (fn [op & rest] op))
 
@@ -311,7 +299,7 @@
                            (core-name? env sym))
                       (get-in @namespaces [ns-name :uses sym]))
                 (let [ev (resolve-existing-var (dissoc env :locals) sym)]
-                  (when *cljs-warn-on-redef*
+                  (when (:redef *cljs-warnings*)
                     (warning env
                       (str "WARNING: " sym " already refers to: " (symbol (str (:ns ev)) (str sym))
                            " being replaced by: " (symbol (str ns-name) (str sym)))))
@@ -332,7 +320,7 @@
                       (if (= true export-val) name export-val))
           doc (or (:doc args) (-> sym meta :doc))]
       (when-let [v (get-in @namespaces [ns-name :defs sym])]
-        (when (and *cljs-warn-on-fn-var*
+        (when (and (:fn-var *cljs-warnings*)
                    (not (-> sym meta :declared))
                    (and (:fn-var v) (not fn-var?)))
           (warning env
@@ -620,8 +608,10 @@
 (defmethod parse 'ns
   [_ env [_ name & args :as form] _]
   (assert (symbol? name) "Namespaces must be named by a symbol.")
-  (let [docstring (if (string? (first args)) (first args) nil)
+  (let [docstring (if (string? (first args)) (first args))
         args      (if docstring (next args) args)
+        metadata  (if (map? (first args)) (first args))
+        args      (if metadata (next args) args)
         excludes
         (reduce (fn [s [k exclude xs]]
                   (if (= k :refer-clojure)
@@ -855,14 +845,14 @@
          fexpr (analyze enve f)
          argexprs (vec (map #(analyze enve %) args))
          argc (count args)]
-     (if (and *cljs-warn-fn-arity* (-> fexpr :info :fn-var))
+     (if (and (:fn-arity *cljs-warnings*) (-> fexpr :info :fn-var))
        (let [{:keys [variadic max-fixed-arity method-params name]} (:info fexpr)]
          (when (and (not (some #{argc} (map count method-params)))
                     (or (not variadic)
                         (and variadic (< argc max-fixed-arity))))
            (warning env
              (str "WARNING: Wrong number of args (" argc ") passed to " name)))))
-     (if (and *cljs-warn-fn-deprecated* (-> fexpr :info :deprecated)
+     (if (and (:fn-deprecated *cljs-warnings*) (-> fexpr :info :deprecated)
               (not (-> form meta :deprecation-nowarn)))
        (warning env
          (str "WARNING: " (-> fexpr :info :name) " is deprecated.")))
@@ -1007,13 +997,22 @@
         (= form ()) (analyze-list env form name)
         :else {:op :constant :env env :form form})))))
 
+(defn forms-seq
+  "Seq of forms in a Clojure or ClojureScript file."
+  ([f]
+     (forms-seq f (clojure.lang.LineNumberingPushbackReader. (io/reader f))))
+  ([f ^java.io.PushbackReader rdr]
+    (lazy-seq
+      (if-let [form (binding [*ns* (create-ns *cljs-ns*)] (read rdr nil nil))]
+        (cons form (forms-seq f rdr))
+        (.close rdr)))))
+
 (defn analyze-file
   [^String f]
   (let [res (if (re-find #"^file://" f) (java.net.URL. f) (io/resource f))]
     (assert res (str "Can't find " f " in classpath"))
     (binding [*cljs-ns* 'cljs.user
-              *cljs-file* (.getPath ^java.net.URL res)
-              *ns* *reader-ns*]
+              *cljs-file* (.getPath ^java.net.URL res)]
       (with-open [r (io/reader res)]
         (let [env (empty-env)
               pbr (clojure.lang.LineNumberingPushbackReader. r)

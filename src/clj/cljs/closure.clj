@@ -387,7 +387,7 @@
   (if output-file
     (let [out-file (io/file (output-directory opts) output-file)]
       (compiled-file (comp/compile-file file out-file opts)))
-    (compile-form-seq (comp/forms-seq file))))
+    (compile-form-seq (ana/forms-seq file))))
 
 (defn compile-dir
   "Recursively compile all cljs files under the given source
@@ -950,8 +950,8 @@
               (or (and (= (opts :optimizations) :advanced))
                   (:static-fns opts)
                   ana/*cljs-static-fns*)
-              ana/*cljs-warn-on-undeclared*
-              (true? (opts :warnings))]
+              ana/*cljs-warnings*
+              (assoc ana/*cljs-warnings* :undeclared (true? (opts :warnings)))]
       (let [compiled (-compile source all-opts)
             js-sources (concat
                          (apply add-dependencies all-opts
