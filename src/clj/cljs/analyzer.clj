@@ -11,9 +11,11 @@
 (ns cljs.analyzer
   (:refer-clojure :exclude [macroexpand-1])
   (:require [clojure.java.io :as io]
+            [clojure.edn :as edn]
             [clojure.string :as string]
             [cljs.tagged-literals :as tags])
-  (:import java.lang.StringBuilder))
+  (:import java.lang.StringBuilder
+           [java.io PushbackReader]))
 
 (def ^:dynamic *cljs-ns* 'cljs.user)
 (def ^:dynamic *cljs-file* nil)
@@ -605,10 +607,31 @@
         (when (io/resource relpath)
           (analyze-file relpath))))))
 
+(defn- ns-defaults
+  "Returns ns defaults. Returns nil if no defaults set.
+  ns defaults are stored in a separate resource in a classpath.
+  Example contents of ns defaults file:
+  {:defaults [(:require-macros [wagjo.data.string :as us])
+              (:require [wagjo.data.string :as us])]
+   :excludes [wagjo.data.string]}"
+  ([]
+     (ns-defaults "ns-defaults.cljs"))
+  ([url]
+     (when-let [resource (io/resource url)]
+       (with-open [r (-> resource io/reader PushbackReader.)]
+         (let [nsd-map (edn/read r)]
+           (assert (map? nsd-map) (str "ns-defaults not a map: " url))
+           nsd-map)))))
+
 (defmethod parse 'ns
   [_ env [_ name & args :as form] _]
   (assert (symbol? name) "Namespaces must be named by a symbol.")
-  (let [docstring (if (string? (first args)) (first args))
+  (let [nsd-map (ns-defaults)
+        ns-defaults (when-not ((set (:excludes nsd-map)) name)
+                      (:defaults nsd-map))
+        form (concat form ns-defaults)
+        args (concat args ns-defaults)
+        docstring (if (string? (first args)) (first args))
         args      (if docstring (next args) args)
         metadata  (if (map? (first args)) (first args))
         args      (if metadata (next args) args)
