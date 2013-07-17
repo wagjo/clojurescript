@@ -9,4 +9,5 @@
   :license {:name "Eclipse Public License - v 1.0"
             :url "http://www.eclipse.org/legal/epl-v10.html"
             :distribution :repo
-            :comments "same as ClojureScript"})
+            :comments "same as ClojureScript"}
+  :jar-exclusions [#"project.clj"])
