@@ -1,7 +1,8 @@
 (defproject com.wagjo/clojurescript "0.1.0-SNAPSHOT"
   :description "Fork of a ClojureScript with small adjustments."
   :url "https://github.com/wagjo/clojurescript"
-  :dependencies [[com.wagjo/closure-library "0.1.0-SNAPSHOT"]
+  :dependencies [;; [org.clojure/clojure "1.5.1"]
+                 [com.wagjo/closure-library "0.1.0-SNAPSHOT"]
                  ;; http://code.google.com/p/closure-compiler/wiki/Maven
                  [com.google.javascript/closure-compiler "v20130603"]
                  [org.mozilla/rhino "1.7R4"]]

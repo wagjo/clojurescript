@@ -611,11 +611,11 @@
   "Returns ns defaults. Returns nil if no defaults set.
   ns defaults are stored in a separate resource in a classpath.
   Example contents of ns defaults file:
-  {:defaults [(:require-macros [wagjo.data.string :as us])
-              (:require [wagjo.data.string :as us])]
-   :excludes [wagjo.data.string]}"
+  {:require-macros ([wagjo.data.string :as us])
+   :require ([wagjo.data.string :as us])
+   :include ["^foo"]}"
   ([]
-     (ns-defaults "ns-defaults.cljs"))
+     (ns-defaults "ns-defaults.edn"))
   ([url]
      (when-let [resource (io/resource url)]
        (with-open [r (-> resource io/reader PushbackReader.)]
@@ -623,18 +623,40 @@
            (assert (map? nsd-map) (str "ns-defaults not a map: " url))
            nsd-map)))))
 
+(defn- enhance-args
+  "Returns args with new stuff added in right places."
+  [args nsd-map]
+  (let [valid-keys [:use :use-macros :require :require-macros :import]
+        arg-map (into {} (map (fn [[k & libs]] [k libs]) args))
+        nsd-map (select-keys nsd-map valid-keys)
+        reduce-fn (fn [libs new-lib]
+                    (if (some #(= % new-lib) libs)
+                      libs
+                      (conj libs new-lib)))
+        merged (merge-with #(reduce reduce-fn (vec %) %2)
+                           arg-map nsd-map)]
+    (map (fn [[k v]] (cons k v)) merged)))
+
+(defn- should-enhance?
+  "Returns true if enhancements apply to given namespace."
+  [ns-name nsd-map]
+  (let [{:keys [exclude include]} nsd-map
+        exclude (cons 'cljs.core exclude)
+        match-fn #(if (string? %)
+                    (re-find (re-pattern %) (str ns-name))
+                    (= % ns-name))]
+    (boolean (and (not (some match-fn exclude))
+                  (or (empty? include) (some match-fn include))))))
+
 (defmethod parse 'ns
   [_ env [_ name & args :as form] _]
   (assert (symbol? name) "Namespaces must be named by a symbol.")
   (let [nsd-map (ns-defaults)
-        ns-defaults (when-not ((set (:excludes nsd-map)) name)
-                      (:defaults nsd-map))
-        form (concat form ns-defaults)
-        args (concat args ns-defaults)
         docstring (if (string? (first args)) (first args))
         args      (if docstring (next args) args)
         metadata  (if (map? (first args)) (first args))
         args      (if metadata (next args) args)
+        args      (if (should-enhance? name nsd-map) (enhance-args args nsd-map) args)
         excludes
         (reduce (fn [s [k exclude xs]]
                   (if (= k :refer-clojure)
