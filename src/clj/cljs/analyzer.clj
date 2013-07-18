@@ -613,17 +613,29 @@
   Example contents of ns defaults file:
   {:require-macros ([wagjo.data.string :as us])
    :require ([wagjo.data.string :as us])
-   :include ["^foo"]}"
+   :include \"^foo\"}"
   ([]
      (ns-defaults "ns-defaults.edn"))
   ([url]
      (when-let [resource (io/resource url)]
        (with-open [r (-> resource io/reader PushbackReader.)]
-         (let [nsd-map (edn/read r)]
-           (assert (map? nsd-map) (str "ns-defaults not a map: " url))
-           nsd-map)))))
+         (let [nsd (edn/read r)]
+           (if (map? nsd) [nsd] nsd))))))
 
-(defn- enhance-args
+(defn- inject-nsd?
+  "Returns true if ns defaults apply to given namespace."
+  [name nsd-map]
+  (let [{:keys [include exclude]} nsd-map
+        include (if (coll? include) include [include])
+        exclude (if (coll? exclude) exclude [exclude])
+        exclude (concat ["^cljs\\." "^clojure\\."] exclude)
+        match-fn #(if (string? %)
+                    (re-find (re-pattern %) (str name))
+                    (= % name))]
+    (boolean (and (not (some match-fn exclude))
+                  (or (empty? include) (some match-fn include))))))
+
+(defn- inject-nsd*
   "Returns args with new stuff added in right places."
   [args nsd-map]
   (let [valid-keys [:use :use-macros :require :require-macros :import]
@@ -637,26 +649,20 @@
                            arg-map nsd-map)]
     (map (fn [[k v]] (cons k v)) merged)))
 
-(defn- should-enhance?
-  "Returns true if enhancements apply to given namespace."
-  [ns-name nsd-map]
-  (let [{:keys [exclude include]} nsd-map
-        exclude (cons 'cljs.core exclude)
-        match-fn #(if (string? %)
-                    (re-find (re-pattern %) (str ns-name))
-                    (= % ns-name))]
-    (boolean (and (not (some match-fn exclude))
-                  (or (empty? include) (some match-fn include))))))
+(defn inject-nsd
+  "Returns args with ns defaults injected."
+  [name nsd args]
+  (reduce inject-nsd* args (filter (partial inject-nsd? name) nsd)))
 
 (defmethod parse 'ns
   [_ env [_ name & args :as form] _]
   (assert (symbol? name) "Namespaces must be named by a symbol.")
-  (let [nsd-map (ns-defaults)
+  (let [nsd (ns-defaults)
         docstring (if (string? (first args)) (first args))
         args      (if docstring (next args) args)
         metadata  (if (map? (first args)) (first args))
         args      (if metadata (next args) args)
-        args      (if (should-enhance? name nsd-map) (enhance-args args nsd-map) args)
+        args      (inject-nsd name nsd args)
         excludes
         (reduce (fn [s [k exclude xs]]
                   (if (= k :refer-clojure)
