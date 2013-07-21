@@ -3068,7 +3068,8 @@ reduces them without incurring seq initialization"
   (-pop [coll]
     (let [l (.-length arr)]
       (cond (zero? l) (throw (js/Error. "Can't pop empty vector"))
-            (== l 1) (-with-meta cljs.core.ArrayVector/EMPTY meta)
+            (== l 1) (-with-meta ^not-native
+                                 cljs.core.ArrayVector/EMPTY meta)
             :else (ArrayVector. meta (.slice arr 0 (dec l)) nil))))
 
   ICollection
@@ -3077,10 +3078,13 @@ reduces them without incurring seq initialization"
       (.push new-arr o)
       (if (< (.-length arr) cljs.core.ArrayVector/PERSISTENTVECTOR_THRESHOLD)
         (ArrayVector. meta new-arr nil)
-        (cljs.core.PersistentVector/fromArray new-arr false))))
+        (-with-meta ^not-native 
+         (cljs.core.PersistentVector/fromArray new-arr true)
+         meta))))
 
   IEmptyableCollection
-  (-empty [coll] (-with-meta cljs.core.ArrayVector/EMPTY meta))
+  (-empty [coll] (-with-meta ^not-native
+                             cljs.core.ArrayVector/EMPTY meta))
 
   ISequential
   IEquiv
@@ -3090,22 +3094,7 @@ reduces them without incurring seq initialization"
   (-hash [coll] (caching-hash coll hash-coll __hash))
 
   ISeqable
-  (-seq [coll] (when (pos? (.-length arr)) coll))
-
-  ISeq
-  (-first [coll] (aget arr 0))
-  (-rest [coll]
-    (let [l (.-length arr)]
-      (cond (zero? l) coll
-            (== l 1) (-with-meta cljs.core.ArrayVector/EMPTY meta)
-            :else (ArrayVector. meta (.slice arr 1) nil))))
-
-  INext
-  (-next [coll]
-    (let [l (.-length arr)]
-        (cond (zero? l) nil
-              (== l 1) nil
-              :else (ArrayVector. meta (.slice arr 1) nil))))
+  (-seq [coll] (when-not (zero? (.-length arr)) (array-seq arr)))
 
   ICounted
   (-count [coll] (.-length arr))
@@ -3118,12 +3107,12 @@ reduces them without incurring seq initialization"
       not-found))
 
   ILookup
-  (-lookup [coll k] (-nth coll k nil))
-  (-lookup [coll k not-found] (-nth coll k not-found))
+  (-lookup [coll k] (-nth ^not-native coll k nil))
+  (-lookup [coll k not-found] (-nth ^not-native coll k not-found))
 
   IMapEntry
-  (-key [coll] (-nth coll 0))
-  (-val [coll] (-nth coll 1))
+  (-key [coll] (-nth ^not-native coll 0))
+  (-val [coll] (-nth ^not-native coll 1))
 
   IAssociative
   (-assoc [coll k v]
@@ -3133,13 +3122,13 @@ reduces them without incurring seq initialization"
             (do (aset new-arr k v)
                 (ArrayVector. meta new-arr nil))
             (== k l)
-            (-conj coll v)
+            (-conj ^not-native coll v)
             :else
             (throw (js/Error.
                     (str "Index " k " out of bounds  [0," l "]"))))))
 
   IVector
-  (-assoc-n [coll n val] (-assoc coll n val))
+  (-assoc-n [coll n val] (-assoc ^not-native coll n val))
 
   IReduce
   (-reduce [v f] (ci-reduce v f))
@@ -3158,8 +3147,8 @@ reduces them without incurring seq initialization"
           init))))
 
   IFn
-  (-invoke [coll k] (-lookup coll k))
-  (-invoke [coll k not-found] (-lookup coll k not-found))
+  (-invoke [coll k] (-nth ^not-native coll k))
+  (-invoke [coll k not-found] (-nth ^not-native coll k not-found))
 
   IEditableCollection
   (-as-transient [coll] (TransientArrayVector. (.slice arr)))
@@ -3181,12 +3170,14 @@ reduces them without incurring seq initialization"
     (.push arr o)
     (if (< (.-length arr) cljs.core.ArrayVector/PERSISTENTVECTOR_THRESHOLD)
       tcoll
-      (-as-transient (cljs.core.PersistentVector/fromArray arr true))))
+      (-as-transient ^not-native
+                     (cljs.core.PersistentVector/fromArray arr
+                                                           true))))
   (-persistent! [tcoll]
     (ArrayVector. nil arr nil)) ;; should clone here?
 
   ITransientAssociative
-  (-assoc! [tcoll key val] (-assoc-n! tcoll key val))
+  (-assoc! [tcoll key val] (-assoc-n! ^not-native tcoll key val))
 
   ITransientVector
   (-assoc-n! [tcoll k v]
@@ -3195,7 +3186,7 @@ reduces them without incurring seq initialization"
             (do (aset arr k v)
                 tcoll)
             (== k l)
-            (-conj! tcoll v)
+            (-conj! ^not-native tcoll v)
             :else
             (throw (js/Error.
                     (str "Index " k " out of bounds  [0," l "]"))))))
@@ -3216,12 +3207,12 @@ reduces them without incurring seq initialization"
       not-found))
 
   ILookup
-  (-lookup [coll k] (-nth coll k nil))
-  (-lookup [coll k not-found] (-nth coll k not-found))
+  (-lookup [coll k] (-nth ^not-native coll k nil))
+  (-lookup [coll k not-found] (-nth ^not-native coll k not-found))
 
   IFn
-  (-invoke [coll k] (-lookup coll k))
-  (-invoke [coll k not-found] (-lookup coll k not-found)))
+  (-invoke [coll k] (-lookup ^not-native coll k))
+  (-invoke [coll k not-found] (-lookup ^not-native coll k not-found)))
 
 ;;; PersistentVector
 
@@ -3589,7 +3580,7 @@ reduces them without incurring seq initialization"
     (build-subvec meta (-assoc-n v end o) start (inc end) nil))
 
   IEmptyableCollection
-  (-empty [coll] (with-meta cljs.core.PersistentVector/EMPTY meta))
+  (-empty [coll] (with-meta cljs.core.ArrayVector/EMPTY meta))
 
   ISequential
   IEquiv
