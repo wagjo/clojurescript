@@ -2061,14 +2061,38 @@ reduces them without incurring seq initialization"
       (identical? (.-fqn x) (.-fqn y))
       false)))
 
+(defn- get-or-create-const-map
+  []
+  (when (undefined? cljs.core.constant$keywordALL)
+    (js* "cljs.core.constant$keywordALL = {}"))
+  cljs.core.constant$keywordALL)
+
+(defn- find-const-keyword
+  [fqn]
+  (let [m (get-or-create-const-map)]
+    (aget m fqn)))
+
+(defn- add-const-keyword
+  [fqn k]
+  (let [m (get-or-create-const-map)]
+    (aset m fqn k)))
+
 (defn keyword
   "Returns a Keyword with the given namespace and name.  Do not use :
   in the keyword strings, it will be added automatically."
-  ([name] (cond
-            (keyword? name)(Keyword. nil name name nil)
-            (symbol? name) (Keyword. nil (cljs.core/name name) (cljs.core/name name) nil)
-            :else (Keyword. nil name name nil)))
-  ([ns name] (Keyword. ns name (str (when ns (str ns "/")) name) nil)))
+  ([name]
+     (if (keyword? name)
+       name
+       (keyword nil name)))
+  ([ns name]
+     (let [ns (when ns (cljs.core/name ns))
+           name (when name (cljs.core/name name))
+           fqn (str (when ns (str ns "/")) name)]
+       (if-let [k (find-const-keyword fqn)]
+         k
+         (let [new-k (Keyword. ns name fqn nil)]
+           (add-const-keyword fqn new-k)
+           new-k)))))
 
 (defn- lazy-seq-value [lazy-seq]
   (let [x (.-x lazy-seq)]

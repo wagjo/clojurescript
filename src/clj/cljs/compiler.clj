@@ -938,7 +938,22 @@
       (emit-constant (if ns
                        (str ns "/" name)
                        name))
-      (emits ");\n"))))
+      (emits ");\n")))
+  (emits "cljs.core.constant$keywordALL = {")
+  (loop [table table]
+    (let [[keyword value] (first table)
+          ns   (namespace keyword)
+          name (name keyword)]
+      (emit-constant (if ns
+                       (str ns "/" name)
+                       name))
+      (emits ": ")
+      (emits "cljs.core." value)
+      (if (seq (rest table))
+        (do (emits ",\n")
+            (recur (rest table)))
+        (emits "\n"))))
+  (emits "};\n"))
 
 (defn emit-constants-table-to-file [table dest]
   (with-open [out ^java.io.Writer (io/make-writer dest {})]
