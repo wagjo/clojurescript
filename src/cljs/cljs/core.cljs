@@ -115,6 +115,11 @@
      (.join (array "No protocol method " proto
                    " defined for type " ty ": " obj) ""))))
 
+(defn type->str [ty]
+  (if-let [s (.-cljs$lang$ctorStr ty)]
+    s
+    (str ty)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; arrays ;;;;;;;;;;;;;;;;
 
 (defn aclone
@@ -371,6 +376,9 @@
 (defn ^boolean symbol? [x]
   (instance? Symbol x))
 
+(defn- hash-symbol [sym]
+  (hash-combine (hash (.-ns sym)) (hash (.-name sym))))
+
 (deftype Symbol [ns name str ^:mutable _hash _meta]
   Object
   (toString [_] str)
@@ -389,12 +397,8 @@
   IWithMeta
   (-with-meta [_ new-meta] (Symbol. ns name str _hash new-meta))
   IHash
-  (-hash [_]
-    (if (== _hash -1)
-      (do
-        (set! _hash (hash-combine (hash ns) (hash name)))
-        _hash)
-      _hash))
+  (-hash [sym]
+    (caching-hash sym hash-symbol _hash))
   INamed
   (-name [_] name)
   (-namespace [_] ns)
@@ -410,7 +414,7 @@
      (let [sym-str (if-not (nil? ns)
                      (str ns "/" name)
                      name)]
-       (Symbol. ns name sym-str -1 nil))))
+       (Symbol. ns name sym-str nil nil))))
 
 ;;;;;;;;;;;;;;;;;;; fundamentals ;;;;;;;;;;;;;;;
 
@@ -732,7 +736,7 @@ reduces them without incurring seq initialization"
   (-reduce [col f] (array-reduce col f))
   (-reduce [col f start] (array-reduce col f start)))
 
-(declare with-meta)
+(declare with-meta seq-reduce)
 
 (deftype RSeq [ci i meta]
   Object
@@ -771,7 +775,11 @@ reduces them without incurring seq initialization"
   (-empty [coll] (with-meta cljs.core.List/EMPTY meta))
 
   IHash
-  (-hash [coll] (hash-coll coll)))
+  (-hash [coll] (hash-coll coll))
+
+  IReduce
+  (-reduce [col f] (seq-reduce f col))
+  (-reduce [col f start] (seq-reduce f start col)))
 
 (defn second
   "Same as (first (next x))"
@@ -898,7 +906,12 @@ reduces them without incurring seq initialization"
          (-nth coll n)
          
          :else
-         (linear-traversal-nth coll (.floor js/Math n)))))
+         (if (satisfies? ISeq coll)
+           (linear-traversal-nth coll (.floor js/Math n))
+           (throw
+             (js/Error.
+               (str "nth not supported on this type "
+                 (type->str (type coll)))))))))
   ([coll n not-found]
      (if-not (nil? coll)
        (cond
@@ -919,7 +932,12 @@ reduces them without incurring seq initialization"
          (-nth coll n)
 
          :else
-         (linear-traversal-nth coll (.floor js/Math n) not-found))
+         (if (satisfies? ISeq coll)
+           (linear-traversal-nth coll (.floor js/Math n) not-found)
+           (throw
+             (js/Error.
+               (str "nth not supported on this type "
+                 (type->str (type coll)))))))
        not-found)))
 
 (defn get
@@ -1891,8 +1909,8 @@ reduces them without incurring seq initialization"
   (-count [coll] count)
 
   IReduce
-  (-reduce [col f] (seq-reduce f col))
-  (-reduce [col f start] (seq-reduce f start col)))
+  (-reduce [coll f] (seq-reduce f coll))
+  (-reduce [coll f start] (seq-reduce f start coll)))
 
 (deftype EmptyList [meta]
   Object
@@ -1935,7 +1953,11 @@ reduces them without incurring seq initialization"
   (-seq [coll] nil)
 
   ICounted
-  (-count [coll] 0))
+  (-count [coll] 0)
+
+  IReduce
+  (-reduce [coll f] (seq-reduce f coll))
+  (-reduce [coll f start] (seq-reduce f start coll)))
 
 (set! cljs.core.List/EMPTY (EmptyList. nil))
 
@@ -2002,7 +2024,11 @@ reduces them without incurring seq initialization"
   (-hash [coll] (caching-hash coll hash-coll __hash))
 
   ISeqable
-  (-seq [coll] coll))
+  (-seq [coll] coll)
+  
+  IReduce
+  (-reduce [coll f] (seq-reduce f coll))
+  (-reduce [coll f start] (seq-reduce f start coll)))
 
 (defn cons
   "Returns a new seq where x is the first element and seq is the rest."
@@ -2092,7 +2118,11 @@ reduces them without incurring seq initialization"
 
   ISeqable
   (-seq [coll]
-    (seq (lazy-seq-value coll))))
+    (seq (lazy-seq-value coll)))
+
+  IReduce
+  (-reduce [coll f] (seq-reduce f coll))
+  (-reduce [coll f start] (seq-reduce f start coll)))
 
 (declare ArrayChunk)
 
@@ -4214,7 +4244,11 @@ reduces them without incurring seq initialization"
   INext
   (-next [coll]
     (when (< i (- (alength arr) 2))
-      (PersistentArrayMapSeq. arr (+ i 2) _meta))))
+      (PersistentArrayMapSeq. arr (+ i 2) _meta)))
+
+  IReduce
+  (-reduce [coll f] (seq-reduce f coll))
+  (-reduce [coll f start] (seq-reduce f start coll)))
 
 (defn persistent-array-map-seq [arr i _meta]
   (when (<= i (- (alength arr) 2))
@@ -4954,7 +4988,11 @@ reduces them without incurring seq initialization"
   (-equiv [coll other] (equiv-sequential coll other))
 
   IHash
-  (-hash [coll] (caching-hash coll hash-coll __hash)))
+  (-hash [coll] (caching-hash coll hash-coll __hash))
+
+  IReduce
+  (-reduce [coll f] (seq-reduce f coll))
+  (-reduce [coll f start] (seq-reduce f start coll)))
 
 (defn- create-inode-seq
   ([nodes]
@@ -5008,7 +5046,11 @@ reduces them without incurring seq initialization"
   (-equiv [coll other] (equiv-sequential coll other))
 
   IHash
-  (-hash [coll] (caching-hash coll hash-coll __hash)))
+  (-hash [coll] (caching-hash coll hash-coll __hash))
+
+  IReduce
+  (-reduce [coll f] (seq-reduce f coll))
+  (-reduce [coll f start] (seq-reduce f start coll)))
 
 (defn- create-array-node-seq
   ([nodes] (create-array-node-seq nil nodes 0 nil))
@@ -5291,7 +5333,11 @@ reduces them without incurring seq initialization"
 
   IWithMeta
   (-with-meta [coll meta]
-    (PersistentTreeMapSeq. meta stack ascending? cnt __hash)))
+    (PersistentTreeMapSeq. meta stack ascending? cnt __hash))
+
+  IReduce
+  (-reduce [coll f] (seq-reduce f coll))
+  (-reduce [coll f start] (seq-reduce f start coll)))
 
 (defn- create-tree-map-seq [tree ascending? cnt]
   (PersistentTreeMapSeq. nil (tree-map-seq-push tree nil ascending?) ascending? cnt nil))
@@ -5967,7 +6013,11 @@ reduces them without incurring seq initialization"
                  (-next mseq)
                  (next mseq))]
       (when-not (nil? nseq)
-        (KeySeq. nseq _meta)))))
+        (KeySeq. nseq _meta))))
+
+  IReduce
+  (-reduce [coll f] (seq-reduce f coll))
+  (-reduce [coll f start] (seq-reduce f start coll)))
 
 (defn keys
   "Returns a sequence of the map's keys."
@@ -6027,7 +6077,11 @@ reduces them without incurring seq initialization"
                  (-next mseq)
                  (next mseq))]
       (when-not (nil? nseq)
-        (ValSeq. nseq _meta)))))
+        (ValSeq. nseq _meta))))
+
+  IReduce
+  (-reduce [coll f] (seq-reduce f coll))
+  (-reduce [coll f start] (seq-reduce f start coll)))
 
 (defn vals
   "Returns a sequence of the map's values."

@@ -191,7 +191,7 @@
   (let [strs (->> (repeat (count xs) "cljs.core.str(~{})")
                   (interpose ",")
                   (apply core/str))]
-   (concat (list 'js* (core/str "[" strs "].join('')")) xs)))
+    (list* 'js* (core/str "[" strs "].join('')") xs)))
 
 (defn bool-expr [e]
   (vary-meta e assoc :tag 'boolean))
@@ -529,10 +529,9 @@
         this-sym (gensym "_")
         locals (keys (:locals &env))
         ns     (-> &env :ns :name)
-        munge  cljs.compiler/munge
-        ns-t   (list 'js* (core/str (munge ns) "." (munge t)))]
+        munge  cljs.compiler/munge]
     `(do
-       (when (undefined? ~ns-t)
+       (when-not (exists? (. ~ns ~(symbol (core/str "-" t))))
          (deftype ~t [~@locals ~meta-sym]
            IWithMeta
            (~'-with-meta [~this-sym ~meta-sym]
@@ -542,14 +541,38 @@
            ~@impls))
        (new ~t ~@locals nil))))
 
+(defmacro ^:private js-this []
+  (list 'js* "this"))
+
 (defmacro this-as
   "Defines a scope where JavaScript's implicit \"this\" is bound to the name provided."
   [name & body]
-  `(let [~name (~'js* "this")]
+  `(let [~name (js-this)]
      ~@body))
 
 (defn to-property [sym]
   (symbol (core/str "-" sym)))
+
+(defn warn-and-update-protocol [p type env]
+  (when-not (= 'Object p)
+    (if-let [var (cljs.analyzer/resolve-existing-var (dissoc env :locals) p)]
+      (do
+        (when-not (:protocol-symbol var)
+          (cljs.analyzer/warning env
+            (core/str "WARNING: Symbol " p " is not a protocol")))
+        (when (and (:protocol-deprecated cljs.analyzer/*cljs-warnings*)
+                (-> var :deprecated)
+                (not (-> p meta :deprecation-nowarn)))
+          (cljs.analyzer/warning env
+            (core/str "WARNING: Protocol " p " is deprecated")))
+        (when (:protocol-symbol var)
+          (swap! cljs.analyzer/namespaces
+            (fn [ns]
+              (update-in ns [(:ns var) :defs (symbol (name p)) :impls]
+                conj type)))))
+      (when (:undeclared cljs.analyzer/*cljs-warnings*)
+        (cljs.analyzer/warning env
+          (core/str "WARNING: Can't resolve protocol symbol " p))))))
 
 (defmacro extend-type [tsym & impls]
   (let [resolve #(let [ret (:name (cljs.analyzer/resolve-var (dissoc &env :locals) %))]
@@ -560,25 +583,11 @@
                      (recur (assoc ret (first s) (take-while seq? (next s)))
                             (drop-while seq? (next s)))
                      ret))
-        warn-if-not-protocol #(when-not (= 'Object %)
-                                (if (:undeclared cljs.analyzer/*cljs-warnings*)
-                                  (if-let [var (cljs.analyzer/resolve-existing-var (dissoc &env :locals) %)]
-                                    (do
-                                     (when-not (:protocol-symbol var)
-                                       (cljs.analyzer/warning &env
-                                         (core/str "WARNING: Symbol " % " is not a protocol")))
-                                     (when (and (:protocol-deprecated cljs.analyzer/*cljs-warnings*)
-                                                (-> var :deprecated)
-                                                (not (-> % meta :deprecation-nowarn)))
-                                       (cljs.analyzer/warning &env
-                                         (core/str "WARNING: Protocol " % " is deprecated"))))
-                                    (cljs.analyzer/warning &env
-                                      (core/str "WARNING: Can't resolve protocol symbol " %)))))
         skip-flag (set (-> tsym meta :skip-protocol-flag))]
     (if (base-type tsym)
       (let [t (base-type tsym)
             assign-impls (fn [[p sigs]]
-                           (warn-if-not-protocol p)
+                           (warn-and-update-protocol p tsym &env)
                            (let [psym (resolve p)
                                  pfn-prefix (subs (core/str psym) 0 (clojure.core/inc (.indexOf (core/str psym) "/")))]
                              (cons `(aset ~psym ~t true)
@@ -590,7 +599,7 @@
             prototype-prefix (fn [sym]
                                `(.. ~tsym -prototype ~(to-property sym)))
             assign-impls (fn [[p sigs]]
-                           (warn-if-not-protocol p)
+                           (warn-and-update-protocol p t &env)
                            (let [psym (resolve p)
                                  pprefix (protocol-prefix psym)]
                              (if (= p 'Object)
@@ -842,7 +851,7 @@
                                         sigs))))]
     `(do
        (set! ~'*unchecked-if* true)
-       (def ~psym (~'js* "{}"))
+       (def ~psym (js-obj))
        ~@(map method methods)
        (set! ~'*unchecked-if* false))))
 
@@ -1181,9 +1190,7 @@
                     (take (count rest))
                     (interpose ",")
                     (apply core/str))]
-   (concat
-    (list 'js* (core/str "[" xs-str "]"))
-    rest)))
+    (list* 'js* (core/str "[" xs-str "]") rest)))
 
 (defmacro make-array
   [size]
@@ -1194,9 +1201,7 @@
                      (take (quot (count rest) 2))
                      (interpose ",")
                      (apply core/str))]
-    (concat
-     (list 'js* (core/str "{" kvs-str "}"))
-     rest)))
+    (list* 'js* (core/str "{" kvs-str "}") rest)))
 
 (defmacro alength [a]
   (list 'js* "~{}.length" a))

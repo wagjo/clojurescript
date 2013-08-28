@@ -13,7 +13,8 @@
   (:require [clojure.java.io :as io]
             [clojure.edn :as edn]
             [clojure.string :as string]
-            [cljs.tagged-literals :as tags])
+            [cljs.tagged-literals :as tags]
+            [clojure.tools.reader :as reader])
   (:import java.lang.StringBuilder
            [java.io PushbackReader]))
 
@@ -30,6 +31,7 @@
    :redef true
    :dynamic true
    :fn-var true
+   :fn-arity true
    :fn-deprecated true
    :protocol-deprecated true})
 
@@ -49,10 +51,11 @@
 
 (defmacro no-warn [& body]
   `(binding [*cljs-warnings*
-             {:redef false
+             {:undeclared false
+              :redef false
               :dynamic false
-              :fn-arity false
               :fn-var false
+              :fn-arity false
               :fn-deprecated false
               :protocol-deprecated false}]
      ~@body))
@@ -340,7 +343,8 @@
                      {:protocol protocol})
                    ;; symbol for reified protocol
                    (when-let [protocol-symbol (-> sym meta :protocol-symbol)]
-                     {:protocol-symbol protocol-symbol})
+                     {:protocol-symbol protocol-symbol
+                      :impls #{}})
                    (when fn-var?
                      {:fn-var true
                       ;; protocol implementation context
@@ -385,7 +389,9 @@
         ;;turn (fn [] ...) into (fn ([]...))
         meths (if (vector? (first meths)) (list meths) meths)
         locals (:locals env)
-        locals (if (and locals name) (assoc locals name {:name name :shadow (locals name)}) locals)
+        name-var (if name
+                   {:name name :shadow (locals name)}) 
+        locals (if (and locals name) (assoc locals name name-var) locals)
         type (-> form meta ::type)
         fields (-> form meta ::fields)
         protocol-impl (-> form meta :protocol-impl)
@@ -423,7 +429,7 @@
                   (no-warn (doall (map #(analyze-fn-method menv locals % type) meths)))
                   methods)]
     ;;todo - validate unique arities, at most one variadic, variadic takes max required args
-    {:env env :op :fn :form form :name name :methods methods :variadic variadic
+    {:env env :op :fn :form form :name name-var :methods methods :variadic variadic
      :recur-frames *recur-frames* :loop-lets *loop-lets*
      :jsdoc [(when variadic "@param {...*} var_args")]
      :max-fixed-arity max-fixed-arity
@@ -878,7 +884,8 @@
            enve (assoc env :context :expr)
            argexprs (vec (map #(analyze enve %) args))]
        {:env env :op :js :segs (seg jsform) :args argexprs
-        :tag (-> form meta :tag) :form form :children argexprs}))
+        :tag (-> form meta :tag) :form form :children argexprs
+        :js-op (-> form meta :js-op)}))
     (let [interp (fn interp [^String s]
                    (let [idx (.indexOf s "~{")]
                      (if (= -1 idx)
@@ -887,7 +894,7 @@
                              inner (:name (resolve-existing-var env (symbol (subs s (+ 2 idx) end))))]
                          (cons (subs s 0 idx) (cons inner (interp (subs s (inc end)))))))))]
       {:env env :op :js :form form :code (apply str (interp jsform))
-       :tag (-> form meta :tag)})))
+       :tag (-> form meta :tag) :js-op (-> form meta :js-op)})))
 
 (defn parse-invoke
   [env [f & args :as form]]
@@ -949,7 +956,15 @@
       form
       (if-let [mac (and (symbol? op) (get-expander op env))]
         (binding [*ns* (create-ns *cljs-ns*)]
-          (apply mac form env (rest form)))
+          (let [form' (apply mac form env (rest form))]
+            (if (seq? form')
+              (let [sym' (first form')
+                    sym  (first form)]
+                (if (= sym' 'js*)
+                  (vary-meta form' assoc
+                    :js-op (if (namespace sym) sym (symbol "cljs.core" (str sym))))
+                  form'))
+              form')))
         (if (symbol? op)
           (let [opname (str op)]
             (cond
@@ -1051,12 +1066,11 @@
 (defn forms-seq
   "Seq of forms in a Clojure or ClojureScript file."
   ([f]
-     (forms-seq f (clojure.lang.LineNumberingPushbackReader. (io/reader f))))
-  ([f ^java.io.PushbackReader rdr]
-    (lazy-seq
-      (if-let [form (binding [*ns* (create-ns *cljs-ns*)] (read rdr nil nil))]
-        (cons form (forms-seq f rdr))
-        (.close rdr)))))
+     (forms-seq f (clojure.tools.reader.reader-types/indexing-push-back-reader (slurp f))))
+  ([f rdr]
+     (lazy-seq
+      (if-let [form (binding [*ns* (create-ns *cljs-ns*)] (reader/read rdr nil nil))]
+        (cons form (forms-seq f rdr))))))
 
 (defn analyze-file
   [^String f]
