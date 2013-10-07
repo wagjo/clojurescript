@@ -15,6 +15,7 @@
   (assert (= "foo" (reader/read-string "\"foo\"")))
   (assert (= :hello (reader/read-string ":hello")))
   (assert (= 'goodbye (reader/read-string "goodbye")))
+  (assert (= '% (reader/read-string "%")))
   (assert (= #{1 2 3} (reader/read-string "#{1 2 3}")))
   (assert (= '(7 8 9) (reader/read-string "(7 8 9)")))
   (assert (= '(deref foo) (reader/read-string "@foo")))
@@ -32,13 +33,13 @@
   (assert (= "escape chars \t \r \n \\ \" \b \f" (reader/read-string "\"escape chars \\t \\r \\n \\\\ \\\" \\b \\f\"")))
 
   ;; queue literals
-  (assert (= cljs.core.PersistentQueue/EMPTY
+  (assert (= cljs.core.PersistentQueue.EMPTY
              (reader/read-string "#queue []")))
 
-  (assert (= (-> cljs.core.PersistentQueue/EMPTY (conj 1))
+  (assert (= (-> cljs.core.PersistentQueue.EMPTY (conj 1))
              (reader/read-string "#queue [1]")))
 
-  (assert (= (into cljs.core.PersistentQueue/EMPTY [1 2])
+  (assert (= (into cljs.core.PersistentQueue.EMPTY [1 2])
              (reader/read-string "#queue [1 2]")))
 
   ;; inst

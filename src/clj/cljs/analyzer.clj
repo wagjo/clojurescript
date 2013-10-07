@@ -14,7 +14,8 @@
             [clojure.edn :as edn]
             [clojure.string :as string]
             [cljs.tagged-literals :as tags]
-            [clojure.tools.reader :as reader])
+            [clojure.tools.reader :as reader]
+            [clojure.tools.reader.reader-types :as readers])
   (:import java.lang.StringBuilder
            [java.io PushbackReader]))
 
@@ -26,6 +27,9 @@
 (def ^:dynamic *cljs-macros-is-classpath* true)
 (def -cljs-macros-loaded (atom false))
 
+(def ^:dynamic *track-constants* false)
+(def ^:dynamic *constant-table* (atom {}))
+
 (def ^:dynamic *cljs-warnings*
   {:undeclared false
    :redef true
@@ -34,6 +38,26 @@
    :fn-arity true
    :fn-deprecated true
    :protocol-deprecated true})
+
+(def constant-counter (atom 0))
+
+(defn gen-constant-id [value]
+  (let [prefix (cond
+                 (keyword? value) "constant$keyword$"
+                 :else
+                 (throw
+                   (Exception. (str "constant type " (type value) " not supported"))))]
+    (symbol (str prefix (swap! constant-counter inc)))))
+
+(defn reset-constant-table! []
+  (reset! *constant-table* {}))
+
+(defn register-constant! [val]
+  (swap! *constant-table*
+    (fn [table]
+      (if (get table val)
+        table
+        (assoc table val (gen-constant-id val))))))
 
 (defonce namespaces (atom '{cljs.core {:name cljs.core}
                             cljs.user {:name cljs.user}}))
@@ -146,6 +170,16 @@
   (let [sym (symbol name)]
     (get (:requires (:ns env)) sym sym)))
 
+;; TODO: our internal conventions around data structures
+;; should probably be changed so we don't special case
+;; cljs.core namespaces, they won't be properly checked
+(defn confirm-ns [env ns-sym]
+  (when (and (nil? (get '#{cljs.core goog Math} ns-sym))
+             (nil? (get (-> env :ns :requires) ns-sym)) 
+             (:undeclared *cljs-warnings*))
+    (warning env
+      (str "WARNING: No such namespace: " ns-sym))))
+
 (defn core-name?
   "Is sym visible from core in the current compilation namespace?"
   [env sym]
@@ -169,6 +203,8 @@
                  ns (if (= "clojure.core" ns) "cljs.core" ns)
                  full-ns (resolve-ns-alias env ns)]
              (when confirm
+               (when (not= (-> env :ns :name) full-ns)
+                 (confirm-ns env full-ns))
                (confirm env full-ns (symbol (name sym))))
              (merge (get-in @namespaces [full-ns :defs (symbol (name sym))])
                     {:name (symbol (str full-ns) (str (name sym)))
@@ -227,8 +263,11 @@
 (defmacro disallowing-recur [& body]
   `(binding [*recur-frames* (cons nil *recur-frames*)] ~@body))
 
+;; TODO: move this logic out - David
 (defn analyze-keyword
     [env sym]
+    (when *track-constants*
+      (register-constant! sym))
     {:op :constant :env env
      :form sym})
 
@@ -371,7 +410,17 @@
                                                :line (get-line name env)
                                                :column (get-col name env)
                                                :tag (-> name meta :tag)
-                                               :shadow (when locals (locals name))}]
+                                               :shadow (when locals (locals name))
+                                               ;; Give the fn params the same shape
+                                               ;; as a :var, so it gets routed
+                                               ;; correctly in the compiler
+                                               :op :var
+                                               :env (merge (select-keys env [:context])
+                                                           {:line (get-line name env)
+                                                            :column (get-col name env)})
+                                               :info {:name name
+                                                      :shadow (when locals (locals name))}
+                                               :binding-form? true}]
                                     [(assoc locals name param) (conj params param)]))
                                 [locals []] param-names)
         fixed-arity (count (if variadic (butlast params) params))
@@ -496,7 +545,15 @@
                                   (-> init-expr :tag)
                                   (-> init-expr :info :tag))
                          :local true
-                         :shadow (-> env :locals name)}
+                         :shadow (-> env :locals name)
+                         ;; Give let* bindings same shape as var so
+                         ;; they get routed correctly in the compiler
+                         :op :var
+                         :env {:line (get-line name env)
+                               :column (get-col name env)}
+                         :info {:name name
+                                :shadow (-> env :locals name)}
+                         :binding-form? true}
                      be (if (= (:op init-expr) :fn)
                           (merge be
                             {:fn-var true
@@ -611,7 +668,22 @@
     (when-not (contains? @namespaces dep)
       (let [relpath (ns->relpath dep)]
         (when (io/resource relpath)
-          (analyze-file relpath))))))
+          (no-warn
+            (analyze-file relpath)))))))
+
+(defn check-uses [uses env]
+  (doseq [[sym lib] uses]
+    (when (and (:undeclared *cljs-warnings*)
+               (= (get-in @namespaces [lib :defs sym] ::not-found) ::not-found))
+      (warning env
+        (str "WARNING: Referred var " lib "/" sym " does not exist")))))
+
+(defn check-uses-macros [uses-macros env]
+  (doseq [[sym lib] uses-macros]
+    (when (and (:undeclared *cljs-warnings*)
+               (nil? (.findInternedVar ^clojure.lang.Namespace (find-ns lib) sym)))
+      (warning env
+        (str "WARNING: Referred macro " lib "/" sym " does not exist")))))
 
 (defn- ns-defaults
   "Returns ns defaults. Returns nil if no defaults set.
@@ -706,6 +778,7 @@
                                    ;; for resolving keywords like ::f/bar
                                    (binding [*ns* (create-ns name)]
                                      (let [^clojure.lang.Namespace ns (create-ns lib)]
+                                       (ns-unalias *ns* alias)
                                        (clojure.core/alias alias (.name ns))))
                                    (let [alias-type (if macros? :macros :fns)]
                                      (assert (not (contains? (alias-type @aliases)
@@ -721,8 +794,10 @@
                                          (error-msg spec ":refer must be followed by a sequence of symbols in :require / :require-macros"))
                                  (when-not macros?
                                    (swap! deps conj lib))
-                                 (merge (when alias {rk {alias lib}})
-                                        (when referred {uk (apply hash-map (interleave referred (repeat lib)))})))))
+                                 (merge
+                                   (when alias
+                                     {rk (merge {alias lib} {lib lib})})
+                                   (when referred {uk (apply hash-map (interleave referred (repeat lib)))})))))
         use->require (fn use->require [[lib kw referred :as spec]]
                        (assert (and (symbol? lib) (= :only kw) (sequential? referred) (every? symbol? referred))
                                (error-msg spec "Only [lib.ns :only (names)] specs supported in :use / :use-macros"))
@@ -750,10 +825,14 @@
                 {} (remove (fn [[r]] (= r :refer-clojure)) args))]
     (when (seq @deps)
       (analyze-deps @deps))
+    (when (seq uses)
+      (check-uses uses env))
     (set! *cljs-ns* name)
     (load-core)
     (doseq [nsym (concat (vals requires-macros) (vals uses-macros))]
       (clojure.core/require nsym))
+    (when (seq uses-macros)
+      (check-uses-macros uses-macros env))
     (swap! namespaces #(-> %
                            (assoc-in [name :name] name)
                            (assoc-in [name :doc] docstring)
@@ -982,7 +1061,7 @@
 (defn analyze-seq
   [env form name]
   (if (:quoted? env)
-    (analyze-list env form name)
+    (analyze-list env form)
     (let [env (assoc env
                 :line (or (-> form meta :line)
                           (:line env))
@@ -1001,40 +1080,39 @@
 (declare analyze-wrap-meta)
 
 (defn analyze-map
-  [env form name]
+  [env form]
   (let [expr-env (assoc env :context :expr)
-        ks (disallowing-recur (vec (map #(analyze expr-env % name) (keys form))))
-        vs (disallowing-recur (vec (map #(analyze expr-env % name) (vals form))))]
+        ks (disallowing-recur (vec (map #(analyze expr-env %) (keys form))))
+        vs (disallowing-recur (vec (map #(analyze expr-env %) (vals form))))]
     (analyze-wrap-meta {:op :map :env env :form form
                         :keys ks :vals vs
-                        :children (vec (interleave ks vs))}
-                       name)))
+                        :children (vec (interleave ks vs))})))
 
 (defn analyze-list
-  [env form name]
+  [env form]
   (let [expr-env (assoc env :context :expr)
-        items (disallowing-recur (doall (map #(analyze expr-env % name) form)))]
-    (analyze-wrap-meta {:op :list :env env :form form :items items :children items} name)))
+        items (disallowing-recur (doall (map #(analyze expr-env %) form)))]
+    (analyze-wrap-meta {:op :list :env env :form form :items items :children items})))
 
 (defn analyze-vector
-  [env form name]
+  [env form]
   (let [expr-env (assoc env :context :expr)
-        items (disallowing-recur (vec (map #(analyze expr-env % name) form)))]
-    (analyze-wrap-meta {:op :vector :env env :form form :items items :children items} name)))
+        items (disallowing-recur (vec (map #(analyze expr-env %) form)))]
+    (analyze-wrap-meta {:op :vector :env env :form form :items items :children items})))
 
 (defn analyze-set
-  [env form name]
+  [env form ]
   (let [expr-env (assoc env :context :expr)
-        items (disallowing-recur (vec (map #(analyze expr-env % name) form)))]
-    (analyze-wrap-meta {:op :set :env env :form form :items items :children items} name)))
+        items (disallowing-recur (vec (map #(analyze expr-env %) form)))]
+    (analyze-wrap-meta {:op :set :env env :form form :items items :children items})))
 
-(defn analyze-wrap-meta [expr name]
+(defn analyze-wrap-meta [expr]
   (let [form (:form expr)
         m (dissoc (meta form) :line :column)]
     (if (seq m)
       (let [env (:env expr) ; take on expr's context ourselves
             expr (assoc-in expr [:env :context] :expr) ; change expr to :expr
-            meta-expr (analyze-map (:env expr) m name)]
+            meta-expr (analyze-map (:env expr) m)]
         {:op :meta :env env :form form
          :meta meta-expr :expr expr :children [meta-expr expr]})
       expr)))
@@ -1056,34 +1134,35 @@
        (cond
         (symbol? form) (analyze-symbol env form)
         (and (seq? form) (seq form)) (analyze-seq env form name)
-        (map? form) (analyze-map env form name)
-        (vector? form) (analyze-vector env form name)
-        (set? form) (analyze-set env form name)
+        (map? form) (analyze-map env form)
+        (vector? form) (analyze-vector env form)
+        (set? form) (analyze-set env form)
         (keyword? form) (analyze-keyword env form)
-        (= form ()) (analyze-list env form name)
+        (= form ()) (analyze-list env form)
         :else {:op :constant :env env :form form})))))
 
 (defn forms-seq
   "Seq of forms in a Clojure or ClojureScript file."
-  ([f]
-     (forms-seq f (clojure.tools.reader.reader-types/indexing-push-back-reader (slurp f))))
-  ([f rdr]
-     (lazy-seq
-      (if-let [form (binding [*ns* (create-ns *cljs-ns*)] (reader/read rdr nil nil))]
-        (cons form (forms-seq f rdr))))))
+  [f]
+  (let [rdr (readers/indexing-push-back-reader (slurp f) 1 f)
+        forms-seq*
+        (fn forms-seq* []
+          (lazy-seq
+            (if-let [form (binding [*ns* (create-ns *cljs-ns*)] (reader/read rdr nil nil))]
+              (cons form (forms-seq*)))))]
+    (forms-seq*)))
 
-(defn analyze-file
-  [^String f]
-  (let [res (if (re-find #"^file://" f) (java.net.URL. f) (io/resource f))]
+(defn analyze-file [f]
+  (let [res (cond
+              (instance? java.io.File f) f
+              (re-find #"^file://" f) (java.net.URL. f)
+              :else (io/resource f))]
     (assert res (str "Can't find " f " in classpath"))
     (binding [*cljs-ns* 'cljs.user
-              *cljs-file* (.getPath ^java.net.URL res)]
-      (with-open [r (io/reader res)]
-        (let [env (empty-env)
-              pbr (clojure.lang.LineNumberingPushbackReader. r)
-              eof (Object.)]
-          (loop [r (read pbr false eof false)]
-            (let [env (assoc env :ns (get-namespace *cljs-ns*))]
-              (when-not (identical? eof r)
-                (analyze env r)
-                (recur (read pbr false eof false))))))))))
+              *cljs-file* (if (instance? java.io.File res)
+                            (.getPath ^java.io.File res)
+                            (.getPath ^java.net.URL res))]
+      (let [env (empty-env)]
+        (doseq [form (seq (forms-seq res))]
+          (let [env (assoc env :ns (get-namespace *cljs-ns*))]
+            (analyze env form)))))))

@@ -515,7 +515,7 @@
   (concat
    (mapcat #(load-library % true) ups-libs) ;upstream deps
    (mapcat load-library libs)
-   (mapcat #(load-foreign-library % true) ups-flibs) ;upstream deps
+   (map #(load-foreign-library % true) ups-flibs) ;upstream deps
    (map load-foreign-library foreign-libs)))
 
 (comment
@@ -642,6 +642,9 @@
                                               (:provides %)
                                               (:requires %))
                              (assoc :group (:group %))) required-js)
+                   [(when ana/*track-constants*
+                      (let [url (to-url (str (output-directory opts) "/constants_table.js"))]
+                        (javascript-file nil url url ["constants-table"] ["cljs.core"] nil nil)))]
                    required-cljs
                    inputs)))))
 
@@ -719,26 +722,28 @@
             (loop [sources (seq sources)
                    merged (sorted-map-by
                             (sm/source-compare
-                              (map (fn [source]
-                                     (if-let [^URL source-url (:source-url source)]
-                                       (.getPath source-url)
-                                       (let [^URL url (:url source)]
-                                         (.getPath url))))
-                                   sources)))]
+                              (remove nil?
+                                (map (fn [source]
+                                       (if-let [^URL source-url (:source-url source)]
+                                         (.getPath source-url)
+                                         (if-let [^URL url (:url source)]
+                                           (.getPath url))))
+                                  sources))))]
               (if sources
                 (let [source (first sources)]
                   (recur (next sources)
-                    (let [path (.getPath ^URL (:url source))]
-                      (if-let [compiled (get @compiled-cljs path)] 
-                        (assoc merged (.getPath ^URL (:source-url source))
-                          (sm/merge-source-maps
-                            (:source-map compiled)
-                            (get closure-source-map path)))
-                        (assoc merged path (get closure-source-map path))))))
-                (let [out-name (str name ".merged")]
-                  (spit (io/file out-name)
-                    (sm/encode merged
-                      {:lines (+ (:lineCount sm-json) 2) :file (:file sm-json)})))))))
+                    (if-let [url (:url source)]
+                      (let [path (.getPath ^URL url)]
+                        (if-let [compiled (get @compiled-cljs path)] 
+                          (assoc merged (.getPath ^URL (:source-url source))
+                            (sm/merge-source-maps
+                              (:source-map compiled)
+                              (get closure-source-map path)))
+                          (assoc merged path (get closure-source-map path))))
+                      merged)))
+                (spit (io/file name)
+                  (sm/encode merged
+                    {:lines (+ (:lineCount sm-json) 2) :file (:file sm-json)}))))))
         source)
       (report-failure result))))
 
@@ -931,44 +936,56 @@
 
 (defn add-source-map-link [{:keys [source-map] :as opts} js]
   (if source-map
-    (str js "\n//@ sourceMappingURL=" source-map ".merged")
+    (str js "\n//@ sourceMappingURL=" source-map)
     js))
 
 (defn build
   "Given a source which can be compiled, produce runnable JavaScript."
-  [source opts]
-  (ana/reset-namespaces!)
-  (let [opts (if (= :nodejs (:target opts))
-               (merge {:optimizations :simple} opts)
-               opts)
-        ups-deps (get-upstream-deps)
-        all-opts (assoc opts 
-                   :ups-libs (:libs ups-deps)
-                   :ups-foreign-libs (:foreign-libs ups-deps)
-                   :ups-externs (:externs ups-deps))]
-    (binding [ana/*cljs-static-fns*
-              (or (and (= (opts :optimizations) :advanced))
-                  (:static-fns opts)
-                  ana/*cljs-static-fns*)
-              ana/*cljs-warnings*
-              (assoc ana/*cljs-warnings* :undeclared (true? (opts :warnings)))]
-      (let [compiled (-compile source all-opts)
-            js-sources (concat
-                         (apply add-dependencies all-opts
-                            (concat (if (coll? compiled) compiled [compiled])
-                                    (when (= :nodejs (:target all-opts))
-                                      [(-compile (io/resource "cljs/nodejs.cljs") all-opts)])))
-                         (when (= :nodejs (:target all-opts))
-                           [(-compile (io/resource "cljs/nodejscli.cljs") all-opts)]))
-            optim (:optimizations all-opts)]
-        (if (and optim (not= optim :none))
-          (->> js-sources
-               (apply optimize all-opts)
-               (add-header all-opts)
-               (add-wrapper all-opts)
-               (add-source-map-link all-opts)
-               (output-one-file all-opts))
-          (apply output-unoptimized all-opts js-sources))))))
+  ([source opts] (build source opts false))
+  ([source opts reset]
+    (when (or reset
+              (= (:optimizations opts) :advanced)
+              (:optimize-constants opts))
+      (ana/reset-constant-table!)
+      (ana/reset-namespaces!))
+    (let [opts (if (= :nodejs (:target opts))
+                 (merge {:optimizations :simple} opts)
+                 opts)
+          ups-deps (get-upstream-deps)
+          all-opts (assoc opts 
+                     :ups-libs (:libs ups-deps)
+                     :ups-foreign-libs (:foreign-libs ups-deps)
+                     :ups-externs (:externs ups-deps))]
+      (binding [ana/*cljs-static-fns*
+                (or (= (opts :optimizations) :advanced)
+                    (:static-fns opts)
+                    ana/*cljs-static-fns*)
+                ana/*track-constants*
+                (or (= (opts :optimizations) :advanced)
+                    (:optimize-constants opts)
+                    ana/*track-constants*)
+                ana/*cljs-warnings*
+                (assoc ana/*cljs-warnings* :undeclared (true? (opts :warnings)))]
+        (let [compiled (-compile source all-opts)
+              const-table (when ana/*track-constants*
+                            (comp/emit-constants-table-to-file @ana/*constant-table*
+                              (str (output-directory all-opts) "/constants_table.js")))
+              js-sources (concat
+                           (apply add-dependencies all-opts
+                             (concat (if (coll? compiled) compiled [compiled])
+                               (when (= :nodejs (:target all-opts))
+                                 [(-compile (io/resource "cljs/nodejs.cljs") all-opts)])))
+                           (when (= :nodejs (:target all-opts))
+                             [(-compile (io/resource "cljs/nodejscli.cljs") all-opts)]))
+               optim (:optimizations all-opts)]
+          (if (and optim (not= optim :none))
+            (->> js-sources
+              (apply optimize all-opts)
+              (add-header all-opts)
+              (add-wrapper all-opts)
+              (add-source-map-link all-opts)
+              (output-one-file all-opts))
+            (apply output-unoptimized all-opts js-sources)))))))
 
 (comment
 
