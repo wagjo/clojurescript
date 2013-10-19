@@ -934,9 +934,9 @@
    (str ";(function(){\n" js "\n})();\n")
    js))
 
-(defn add-source-map-link [{:keys [source-map] :as opts} js]
+(defn add-source-map-link [{:keys [source-map output-to] :as opts} js]
   (if source-map
-    (str js "\n//@ sourceMappingURL=" source-map)
+    (str js "\n//@ sourceMappingURL=" (path-relative-to (io/file output-to) {:url source-map}))
     js))
 
 (defn build
@@ -957,11 +957,13 @@
                      :ups-foreign-libs (:foreign-libs ups-deps)
                      :ups-externs (:externs ups-deps))]
       (binding [ana/*cljs-static-fns*
-                (or (= (opts :optimizations) :advanced)
+                (or (and (= (:optimizations opts) :advanced)
+                         (not (false? (:static-fns opts))))
                     (:static-fns opts)
                     ana/*cljs-static-fns*)
                 ana/*track-constants*
-                (or (= (opts :optimizations) :advanced)
+                (or (and (= (:optimizations opts) :advanced)
+                         (not (false? (:optimize-constants opts))))
                     (:optimize-constants opts)
                     ana/*track-constants*)
                 ana/*cljs-warnings*

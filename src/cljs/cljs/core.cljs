@@ -462,8 +462,8 @@
     (if (satisfies? ISeq coll false)
       (-rest ^not-native coll)
       (let [s (seq coll)]
-        (if-not (nil? s)
-          (-rest s)
+        (if s
+          (-rest ^not-native s)
           ())))
     ()))
 
@@ -482,7 +482,8 @@
   structures define -equiv (and thus =) as a value, not an identity,
   comparison."
   ([x] true)
-  ([x y] (or (identical? x y) (-equiv x y)))
+  ([x y] (or (identical? x y)
+             ^boolean (-equiv x y)))
   ([x y & more]
      (if (= x y)
        (if (next more)
@@ -541,15 +542,7 @@
 
 (extend-type number
   IEquiv
-  (-equiv [x o] (identical? x o))
-
-  IHash
-  (-hash [o] (js-mod (.floor js/Math o) 2147483647)))
-
-(extend-type boolean
-  IHash
-  (-hash [o]
-    (if (identical? o true) 1 0)))
+  (-equiv [x o] (identical? x o)))
 
 (declare with-meta)
 
@@ -1071,12 +1064,23 @@ reduces them without incurring seq initialization"
       h
       (add-to-string-hash-cache k))))
 
-(defn hash
-  ([o] (hash o true))
-  ([o ^boolean check-cache]
-     (if (and ^boolean (goog/isString o) check-cache)
-       (check-string-hash-cache o)
-       (-hash o))))
+(defn hash [o]
+  (cond
+    (satisfies? IHash o false)
+    (-hash ^not-native o)
+
+    (number? o)
+    (js-mod (.floor js/Math o) 2147483647)
+
+    (true? o) 1
+
+    (false? o) 0
+
+    (string? o)
+    (check-string-hash-cache o)
+
+    :else
+    (-hash o)))
 
 (defn ^boolean empty?
   "Returns true if coll has no items - same as (not (seq coll)).
@@ -1749,11 +1753,10 @@ reduces them without incurring seq initialization"
          ""
          (.toString x)))
   ([x & ys]
-     ((fn [sb more]
-        (if more
-          (recur (. sb  (append (str (first more)))) (next more))
-          (.toString sb)))
-      (gstring/StringBuffer. (str x)) ys)))
+    (loop [sb (gstring/StringBuffer. (str x)) more ys]
+      (if more
+        (recur (. sb  (append (str (first more)))) (next more))
+        (.toString sb)))))
 
 (defn subs
   "Returns the substring of s beginning at start inclusive, and ending
@@ -1782,7 +1785,12 @@ reduces them without incurring seq initialization"
                    (bit-shift-right seed 2))))
 
 (defn- hash-coll [coll]
-  (reduce #(hash-combine %1 (hash %2 false)) (hash (first coll) false) (next coll)))
+  (if (seq coll)
+    (loop [res (hash (first coll)) s (next coll)]
+      (if (nil? s)
+        res
+        (recur (hash-combine res (hash (first s))) (next s))))
+    0))
 
 (declare key val)
 
@@ -2003,10 +2011,6 @@ reduces them without incurring seq initialization"
 (defn ^boolean list? [x]
   (satisfies? IList x))
 
-(extend-type string
-  IHash
-  (-hash [o] (goog.string/hashCode o)))
-
 (deftype Keyword [ns name fqn ^:mutable _hash]
   Object
   (toString [_] (str ":" fqn))
@@ -2017,16 +2021,11 @@ reduces them without incurring seq initialization"
       (identical? fqn (.-fqn other))
       false))
   IFn
-  (invoke [kw coll]
-    (when-not (nil? coll)
-      (when (satisfies? ILookup coll)
-        (-lookup coll kw nil))))
-  (invoke [kw coll not-found]
-    (if (nil? coll)
-      not-found
-      (if (satisfies? ILookup coll)
-        (-lookup coll kw not-found)
-        not-found)))
+  (-invoke [kw coll]
+    (get coll kw nil))
+  (-invoke [kw coll not-found]
+    (get coll kw not-found))
+
   IHash
   (-hash [_]
     ; This was checking if _hash == -1, should it stay that way?
@@ -2036,9 +2035,11 @@ reduces them without incurring seq initialization"
                         0x9e3779b9))
         _hash)
       _hash))
+
   INamed
   (-name [_] name)
   (-namespace [_] ns)
+
   IPrintWithWriter
   (-pr-writer [o writer _] (-write writer (str ":" fqn))))
 
@@ -2597,6 +2598,7 @@ reduces them without incurring seq initialization"
   "Takes a function f and fewer than the normal arguments to f, and
   returns a fn that takes a variable number of additional args. When
   called, the returned function calls f with args + additional args."
+  ([f] f)
   ([f arg1]
    (fn [& args] (apply f arg1 args)))
   ([f arg1 arg2]
@@ -6733,7 +6735,7 @@ reduces them without incurring seq initialization"
         match-idx (.search s re)
         match-str (if (coll? match-data) (first match-data) match-data)
         post-match (subs s (+ match-idx (count match-str)))]
-    (when match-data (lazy-seq (cons match-data (re-seq re post-match))))))
+    (when match-data (lazy-seq (cons match-data (when (seq post-match) (re-seq re post-match)))))))
 
 (defn re-pattern
   "Returns an instance of RegExp which has compiled the provided string."
@@ -7536,7 +7538,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   (-dispatch [mf args]))
 
 (defn- do-dispatch
-  [mf dispatch-fn args]
+  [mf name dispatch-fn args]
   (let [dispatch-val (apply dispatch-fn args)
         target-fn (-get-method mf dispatch-val)]
     (when-not target-fn
@@ -7587,7 +7589,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   (-methods [mf] @method-table)
   (-prefers [mf] @prefer-table)
 
-  (-dispatch [mf args] (do-dispatch mf dispatch-fn args))
+  (-dispatch [mf args] (do-dispatch mf name dispatch-fn args))
 
   IHash
   (-hash [this] (goog/getUid this)))
@@ -7696,6 +7698,6 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
 
 (defn ^boolean special-symbol? [x]
   (contains?
-    '#{if def fn* do let* loop* letfn* throw try*
+    '#{if def fn* do let* loop* letfn* throw try
        recur new set! ns deftype* defrecord* . js* & quote}
     x))

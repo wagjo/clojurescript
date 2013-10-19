@@ -4,7 +4,7 @@
   :dependencies [;; [org.clojure/clojure "1.5.1"]
                  [com.wagjo/closure-library "0.1.0-SNAPSHOT"]
                  [org.clojure/data.json "0.2.3"]
-                 [org.clojure/tools.reader "0.7.8"]
+                 [org.clojure/tools.reader "0.7.9"]
                  ;; http://code.google.com/p/closure-compiler/wiki/Maven
                  [com.google.javascript/closure-compiler "v20130823"]
                  [org.mozilla/rhino "1.7R4"]]

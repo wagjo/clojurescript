@@ -317,12 +317,17 @@
       :do  (infer-tag (:ret e))
       :if (let [then-tag (infer-tag (:then e))
                 else-tag (infer-tag (:else e))]
-            (when (= then-tag else-tag)
-              then-tag))
+            (if (= then-tag else-tag)
+              then-tag
+              (if (every? '#{boolean seq} [then-tag else-tag])
+                'seq)))
       :constant (case (:form e)
                   true 'boolean
                   false 'boolean
                   nil)
+      :var (if (:init e)
+             (infer-tag (:init e))
+             (infer-tag (:info e)))
       nil)))
 
 (defn safe-test? [e]
@@ -576,7 +581,7 @@
     (emit ret)
     (when (and statements (= :expr context)) (emits "})()"))))
 
-(defmethod emit :try*
+(defmethod emit :try
   [{:keys [env try catch name finally]}]
   (let [context (:context env)]
     (if (or name finally)
@@ -703,7 +708,7 @@
        proto?
        (let [pimpl (str (munge (protocol-prefix protocol))
                         (munge (name (:name info))) "$arity$" (count args))]
-         (emits (first args) "." pimpl "(" (comma-sep args) ")"))
+         (emits (first args) "." pimpl "(" (comma-sep (cons "null" (rest args))) ")"))
 
        keyword?
        (emits f ".call(" (comma-sep (cons "null" args)) ")")
