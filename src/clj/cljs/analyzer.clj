@@ -13,11 +13,12 @@
   (:require [clojure.java.io :as io]
             [clojure.edn :as edn]
             [clojure.string :as string]
+            [cljs.env :as env]
             [cljs.tagged-literals :as tags]
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers])
   (:import java.lang.StringBuilder
-           [java.io PushbackReader]))
+           [java.io PushbackReader File]))
 
 (def ^:dynamic *cljs-ns* 'cljs.user)
 (def ^:dynamic *cljs-file* nil)
@@ -27,17 +28,101 @@
 (def ^:dynamic *cljs-macros-is-classpath* true)
 (def -cljs-macros-loaded (atom false))
 
-(def ^:dynamic *track-constants* false)
-(def ^:dynamic *constant-table* (atom {}))
-
 (def ^:dynamic *cljs-warnings*
-  {:undeclared false
+  {:undeclared-var false
+   :undeclared-ns false
+   :undeclared-ns-form true
    :redef true
    :dynamic true
    :fn-var true
    :fn-arity true
    :fn-deprecated true
-   :protocol-deprecated true})
+   :protocol-deprecated true
+   :undeclared-protocol-symbol true
+   :invalid-protocol-symbol true
+   :multiple-variadic-overloads true
+   :variadic-max-arity true
+   :overload-arity true})
+
+(declare message namespaces)
+
+(defmulti default-warning-handler* (fn [warning-type & _] warning-type))
+
+(defmethod default-warning-handler* :undeclared-var
+  [warning-type extra]
+  (str "Use of undeclared Var " (:prefix extra) "/" (:suffix extra)))
+
+(defmethod default-warning-handler* :undeclared-ns
+  [warning-type extra]
+  (str "No such namespace: " (:ns-sym extra)))
+
+(defmethod default-warning-handler* :dynamic
+  [warning-type extra]
+  (str (:name extra) " not declared ^:dynamic"))
+
+(defmethod default-warning-handler* :redef
+  [warning-type extra]
+  (str (:sym extra) " already refers to: " (symbol (str (:ns extra)) (str (:sym extra)))
+    " being replaced by: " (symbol (str (:ns-name extra)) (str (:sym extra)))))
+
+(defmethod default-warning-handler* :fn-var
+  [warning-type extra]
+  (str (symbol (str (:ns-name extra)) (str (:sym extra)))
+    " no longer fn, references are stale"))
+
+(defmethod default-warning-handler* :fn-arity
+  [warning-type extra]
+  (str "Wrong number of args (" (:argc extra) ") passed to "
+    (or (:ctor extra)
+      (:name extra))))
+
+(defmethod default-warning-handler* :fn-deprecated
+  [warning-type extra]
+  (str (-> extra :fexpr :info :name) " is deprecated."))
+
+(defmethod default-warning-handler* :undeclared-ns-form
+  [warning-type extra]
+  (str "Referred " (:type extra) " " (:lib extra) "/" (:sym extra) " does not exist"))
+
+(defmethod default-warning-handler* :protocol-deprecated
+  [warning-type extra]
+  (str "Protocol " (:protocol extra) " is deprecated"))
+
+(defmethod default-warning-handler* :undeclared-protocol-symbol
+  [warning-type extra]
+  (str "Can't resolve protocol symbol " (:protocol extra)))
+
+(defmethod default-warning-handler* :invalid-protocol-symbol
+  [warning-type extra]
+  (str "Symbol " (:protocol extra) " is not a protocol"))
+
+(defmethod default-warning-handler* :multiple-variadic-overloads
+  [warning-type extra]
+  (str (:name extra) ": Can't have more than 1 variadic overload"))
+
+(defmethod default-warning-handler* :variadic-max-arity
+  [warning-type extra]
+  (str (:name extra) ": Can't have fixed arity function with more params than variadic function"))
+
+(defmethod default-warning-handler* :overload-arity
+  [warning-type extra]
+  (str (:name extra) ": Can't have 2 overloads with same arity"))
+
+(defn ^:private default-warning-handler [warning-type env extra]
+  (when (warning-type *cljs-warnings*)
+    (when-let [s (default-warning-handler* warning-type extra)]
+      (binding [*out* *err*]
+        (println (message env (str "WARNING: " s)))))))
+
+(def ^:dynamic *cljs-warning-handlers*
+  [default-warning-handler])
+
+(defn with-warning-handlers [handlers]
+  (binding [*cljs-warning-handlers* handlers]))
+
+(defmacro with-warning-handlers [handlers & body]
+  `(binding [*cljs-warning-handlers* ~handlers]
+     ~@body))
 
 (defn munge-path [ss]
   (clojure.lang.Compiler/munge (str ss)))
@@ -45,7 +130,7 @@
 (defn ns->relpath [s]
   (str (string/replace (munge-path s) \. \/) ".cljs"))
 
-(def constant-counter (atom 0))
+(def ^:private constant-counter (atom 0))
 
 (defn gen-constant-id [value]
   (let [prefix (cond
@@ -55,40 +140,40 @@
                    (Exception. (str "constant type " (type value) " not supported"))))]
     (symbol (str prefix (swap! constant-counter inc)))))
 
-(defn reset-constant-table! []
-  (reset! *constant-table* {}))
-
-(defn register-constant! [val]
-  (swap! *constant-table*
+(defn- register-constant! [val]
+  (swap! env/*compiler* update-in [::constant-table]
     (fn [table]
       (if (get table val)
         table
         (assoc table val (gen-constant-id val))))))
 
-(defonce namespaces (atom '{cljs.core {:name cljs.core}
-                            cljs.user {:name cljs.user}}))
+(def default-namespaces '{cljs.core {:name cljs.core}
+                          cljs.user {:name cljs.user}})
 
-(defn reset-namespaces! []
-  (reset! namespaces
-    '{cljs.core {:name cljs.core}
-      cljs.user {:name cljs.user}}))
+;; this exists solely to support read-only namespace access from macros.
+;; External tools should look at the authoritative ::namespaces slot in the
+;; compiler-env atoms/maps they're using already; this value will yield only
+;; `default-namespaces` when accessed outside the scope of a
+;; compilation/analysis call
+(def namespaces (reify clojure.lang.IDeref
+                  (deref [_] (if (bound? #'env/*compiler*)
+                               (::namespaces @env/*compiler*)
+                               ;; TODO maybe this should throw an exception
+                               ;; instead of returning the default namespaces
+                               default-namespaces))))
 
 (defn get-namespace [key]
-  (@namespaces key))
-
-(defn set-namespace [key val]
-  (swap! namespaces assoc key val))
+  (get-in @env/*compiler* [::namespaces key]))
 
 (defmacro no-warn [& body]
-  `(binding [*cljs-warnings*
-             {:undeclared false
-              :redef false
-              :dynamic false
-              :fn-var false
-              :fn-arity false
-              :fn-deprecated false
-              :protocol-deprecated false}]
-     ~@body))
+  (let [no-warnings (zipmap (keys *cljs-warnings*) (repeat false))]
+    `(binding [*cljs-warnings* ~no-warnings]
+       ~@body)))
+
+(defmacro all-warn [& body]
+  (let [all-warnings (zipmap (keys *cljs-warnings*) (repeat true))]
+    `(binding [*cljs-warnings* ~all-warnings]
+       ~@body)))
 
 (defn get-line [x env]
   (or (-> x meta :line) (:line env)))
@@ -121,7 +206,7 @@
        ~@body)))
 
 (defn empty-env []
-  {:ns (@namespaces *cljs-ns*) :context :statement :locals {}})
+  {:ns (get-namespace *cljs-ns*) :context :statement :locals {}})
 
 (defmacro ^:private debug-prn
   [& args]
@@ -142,9 +227,9 @@
   (str s (when (:line env)
            (str " at line " (:line env) " " *cljs-file*))))
 
-(defn warning [env s]
-  (binding [*out* *err*]
-    (println (message env s))))
+(defn warning [warning-type env extra]
+  (doseq [handler *cljs-warning-handlers*]
+    (handler warning-type env extra)))
 
 (defn error
   ([env s] (error env s nil))
@@ -165,12 +250,11 @@
          (throw (error ~env (.getMessage err#) err#))))))
 
 (defn confirm-var-exists [env prefix suffix]
-  (when (:undeclared *cljs-warnings*)
+  (when (:undeclared-var *cljs-warnings*)
     (let [crnt-ns (-> env :ns :name)]
       (when (= prefix crnt-ns)
-        (when-not (-> @namespaces crnt-ns :defs suffix)
-          (warning env
-            (str "WARNING: Use of undeclared Var " prefix "/" suffix)))))))
+        (when-not (get-in @env/*compiler* [::namespaces crnt-ns :defs suffix])
+          (warning :undeclared-var env {:prefix prefix :suffix suffix}))))))
 
 (defn resolve-ns-alias [env name]
   (let [sym (symbol name)]
@@ -183,13 +267,12 @@
              ;; confirm that the library at least exists
              (nil? (io/resource (ns->relpath ns-sym)))
              (:undeclared *cljs-warnings*))
-    (warning env
-      (str "WARNING: No such namespace: " ns-sym))))
+    (warning :undeclared-ns env {:ns-sym ns-sym})))
 
 (defn core-name?
   "Is sym visible from core in the current compilation namespace?"
   [env sym]
-  (and (get (:defs (@namespaces 'cljs.core)) sym)
+  (and (get-in @env/*compiler* [::namespaces 'cljs.core :defs sym]) 
        (not (contains? (-> env :ns :excludes) sym))))
 
 (defn resolve-var
@@ -212,7 +295,7 @@
                (when (not= (-> env :ns :name) full-ns)
                  (confirm-ns env full-ns))
                (confirm env full-ns (symbol (name sym))))
-             (merge (get-in @namespaces [full-ns :defs (symbol (name sym))])
+             (merge (get-in @env/*compiler* [::namespaces full-ns :defs (symbol (name sym))])
                     {:name (symbol (str full-ns) (str (name sym)))
                      :ns full-ns}))
 
@@ -223,19 +306,19 @@
                  lb (-> env :locals prefix)]
              (if lb
                {:name (symbol (str (:name lb) suffix))}
-               (merge (get-in @namespaces [prefix :defs (symbol suffix)])
+               (merge (get-in @env/*compiler* [::namespaces prefix :defs (symbol suffix)])
                  {:name (if (= "" prefix) (symbol suffix) (symbol (str prefix) suffix))
                   :ns prefix})))
 
-           (get-in @namespaces [(-> env :ns :name) :uses sym])
-           (let [full-ns (get-in @namespaces [(-> env :ns :name) :uses sym])]
+           (get-in @env/*compiler* [::namespaces (-> env :ns :name) :uses sym])
+           (let [full-ns (get-in @env/*compiler* [::namespaces (-> env :ns :name) :uses sym])]
              (merge
-              (get-in @namespaces [full-ns :defs sym])
+              (get-in @env/*compiler* [::namespaces full-ns :defs sym])
               {:name (symbol (str full-ns) (str sym))
                :ns (-> env :ns :name)}))
 
-           (get-in @namespaces [(-> env :ns :name) :imports sym])
-           (recur env (get-in @namespaces [(-> env :ns :name) :imports sym]) confirm)
+           (get-in @env/*compiler* [::namespaces (-> env :ns :name) :imports sym])
+           (recur env (get-in @env/*compiler* [::namespaces (-> env :ns :name) :imports sym]) confirm)
 
            :else
            (let [full-ns (if (core-name? env sym)
@@ -243,21 +326,22 @@
                            (-> env :ns :name))]
              (when confirm
                (confirm env full-ns sym))
-             (merge (get-in @namespaces [full-ns :defs sym])
+             (merge (get-in @env/*compiler* [::namespaces full-ns :defs sym])
                     {:name (symbol (str full-ns) (str sym))
                      :ns full-ns})))))))
 
 (defn resolve-existing-var [env sym]
-  (resolve-var env sym confirm-var-exists))
+  (if-not (-> sym meta ::no-resolve)
+    (resolve-var env sym confirm-var-exists)
+    (resolve-var env sym)))
 
 (defn confirm-bindings [env names]
   (doseq [name names]
-    (let [env (merge env {:ns (@namespaces *cljs-ns*)})
+    (let [env (assoc env :ns (get-namespace *cljs-ns*))
           ev (resolve-existing-var env name)]
       (when (and (:dynamic *cljs-warnings*)
                  ev (not (-> ev :dynamic)))
-        (warning env
-          (str "WARNING: " (:name ev) " not declared ^:dynamic"))))))
+        (warning :dynamic env {:ev ev})))))
 
 (declare analyze analyze-symbol analyze-seq)
 
@@ -271,11 +355,9 @@
 
 ;; TODO: move this logic out - David
 (defn analyze-keyword
-    [env sym]
-    (when *track-constants*
-      (register-constant! sym))
-    {:op :constant :env env
-     :form sym})
+  [env sym]
+  (register-constant! sym)
+  {:op :constant :env env :form sym})
 
 (defmulti parse (fn [op & rest] op))
 
@@ -302,13 +384,36 @@
   [op env [_ & body :as form] name]
   (let [catchenv (update-in env [:context] #(if (= :expr %) :return %))
         catch? (every-pred seq? #(= (first %) 'catch))
+        default? (every-pred catch? #(= (second %) :default))
         finally? (every-pred seq? #(= (first %) 'finally))
-        [body tail] (split-with (complement (some-fn catch? finally?)) body)
-        [cblocks [fblock]] (split-with catch? tail)
+
+        {:keys [body cblocks dblock fblock]}
+        (loop [parser {:state :start :forms body
+                       :body [] :cblocks [] :dblock nil :fblock nil}]
+          (if (seq? (:forms parser))
+            (let [[form & forms*] (:forms parser)
+                  parser* (assoc parser :forms forms*)]
+              (case (:state parser)
+                :start (cond
+                         (catch? form) (recur (assoc parser :state :catches))
+                         (finally? form) (recur (assoc parser :state :finally))
+                         :else (recur (update-in parser* [:body] conj form)))
+                :catches (cond
+                           (default? form) (recur (assoc parser* :dblock form :state :finally))
+                           (catch? form) (recur (update-in parser* [:cblocks] conj form))
+                           (finally? form) (recur (assoc parser :state :finally))
+                           :else (throw (error env "Invalid try form")))
+                :finally (recur (assoc parser* :fblock form :state :done))
+                :done (throw (error env "Unexpected form after finally"))))
+            parser))
+
         finally (when (seq fblock)
                   (analyze (assoc env :context :statement) `(do ~@(rest fblock))))
-        e (when (seq cblocks) (gensym "e"))
-        cblock (when e
+        e (when (or (seq cblocks) dblock) (gensym "e"))
+        default (if-let [[_ _ name & cb] dblock]
+                  `(cljs.core/let [~name ~e] ~@cb)
+                  `(throw ~e))
+        cblock (if (seq cblocks)
                  `(cljs.core/cond
                    ~@(mapcat
                       (fn [[_ type name & cb]]
@@ -316,7 +421,8 @@
                         `[(cljs.core/instance? ~type ~e)
                           (cljs.core/let [~name ~e] ~@cb)])
                       cblocks)
-                   :else (throw ~e)))
+                   :else ~default)
+                 default)
         locals (:locals catchenv)
         locals (if e
                  (assoc locals e
@@ -355,13 +461,11 @@
         (throw (error env "Too many arguments to def"))))
     (let [env (if (or (and (not= ns-name 'cljs.core)
                            (core-name? env sym))
-                      (get-in @namespaces [ns-name :uses sym]))
+                      (get-in @env/*compiler* [::namespaces ns-name :uses sym]))
                 (let [ev (resolve-existing-var (dissoc env :locals) sym)]
                   (when (:redef *cljs-warnings*)
-                    (warning env
-                      (str "WARNING: " sym " already refers to: " (symbol (str (:ns ev)) (str sym))
-                           " being replaced by: " (symbol (str ns-name) (str sym)))))
-                  (swap! namespaces update-in [ns-name :excludes] conj sym)
+                    (warning :redef env {:ev ev :sym sym :ns-name ns-name}))
+                  (swap! env/*compiler* update-in [::namespaces ns-name :excludes] conj sym)
                   (update-in env [:ns :excludes] conj sym))
                 env)
           name (:name (resolve-var (dissoc env :locals) sym))
@@ -377,36 +481,34 @@
           export-as (when-let [export-val (-> sym meta :export)]
                       (if (= true export-val) name export-val))
           doc (or (:doc args) (-> sym meta :doc))]
-      (when-let [v (get-in @namespaces [ns-name :defs sym])]
+      (when-let [v (get-in @env/*compiler* [::namespaces ns-name :defs sym])]
         (when (and (:fn-var *cljs-warnings*)
                    (not (-> sym meta :declared))
                    (and (:fn-var v) (not fn-var?)))
-          (warning env
-            (str "WARNING: " (symbol (str ns-name) (str sym))
-                 " no longer fn, references are stale"))))
-      (swap! namespaces assoc-in [ns-name :defs sym]
-                 (merge 
-                   {:name name}
-                   sym-meta
-                   (when doc {:doc doc})
-                   (when dynamic {:dynamic true})
-                   (source-info name env)
-                   ;; the protocol a protocol fn belongs to
-                   (when protocol
-                     {:protocol protocol})
-                   ;; symbol for reified protocol
-                   (when-let [protocol-symbol (-> sym meta :protocol-symbol)]
-                     {:protocol-symbol protocol-symbol
-                      :impls #{}})
-                   (when fn-var?
-                     {:fn-var true
-                      ;; protocol implementation context
-                      :protocol-impl (:protocol-impl init-expr)
-                      ;; inline protocol implementation context
-                      :protocol-inline (:protocol-inline init-expr)
-                      :variadic (:variadic init-expr)
-                      :max-fixed-arity (:max-fixed-arity init-expr)
-                      :method-params (map :params (:methods init-expr))})))
+          (warning :fn-var env {:ns-name ns-name :sym sym})))
+      (swap! env/*compiler* assoc-in [::namespaces ns-name :defs sym]
+             (merge 
+              {:name name}
+              sym-meta
+              (when doc {:doc doc})
+              (when dynamic {:dynamic true})
+              (source-info name env)
+              ;; the protocol a protocol fn belongs to
+              (when protocol
+                {:protocol protocol})
+              ;; symbol for reified protocol
+              (when-let [protocol-symbol (-> sym meta :protocol-symbol)]
+                {:protocol-symbol protocol-symbol
+                 :impls #{}})
+              (when fn-var?
+                {:fn-var true
+                 ;; protocol implementation context
+                 :protocol-impl (:protocol-impl init-expr)
+                 ;; inline protocol implementation context
+                 :protocol-inline (:protocol-inline init-expr)
+                 :variadic (:variadic init-expr)
+                 :max-fixed-arity (:max-fixed-arity init-expr)
+                 :method-params (map :params (:methods init-expr))})))
       (merge {:env env :op :def :form form
               :name name :var var-expr :doc doc :init init-expr}
              (when tag {:tag tag})
@@ -493,10 +595,16 @@
                   ;; lets us optimize self calls
                   (no-warn (doall (map #(analyze-fn-method menv locals % type) meths)))
                   methods)]
-    ;;todo - at most one variadic, variadic takes max required args
-    (let [param-counts (map (comp count :params) methods)]
-      (when (not= (distinct param-counts) param-counts)
-        (throw (error env "Can't have 2 overloads with same arity"))))
+    (let [variadic-methods (filter :variadic methods)
+          variadic-params (count (:params (first variadic-methods)))
+          param-counts (map (comp count :params) methods)]
+      (when (and (:multiple-variadic-overloads *cljs-warnings*) (< 1 (count variadic-methods)))
+        (warning :multiple-variadic-overloads env {:name name-var}))
+      (when (and (:variadic-max-arity *cljs-warnings*)
+                 (not (or (zero? variadic-params) (= variadic-params (+ 1 max-fixed-arity)))))
+        (warning :variadic-max-arity env {:name name-var}))
+      (when (and (:overload-arity *cljs-warnings*) (not= (distinct param-counts) param-counts))
+        (warning :overload-arity env {:name name-var})))
     {:env env :op :fn :form form :name name-var :methods methods :variadic variadic
      :recur-frames *recur-frames* :loop-lets *loop-lets*
      :jsdoc [(when variadic "@param {...*} var_args")]
@@ -635,9 +743,8 @@
          argexprs (vec (map #(analyze enve %) args))
          known-num-fields (:num-fields (resolve-existing-var env ctor))
          argc (count args)]
-     (when (and known-num-fields (not= known-num-fields argc))
-       (warning env
-         (str "WARNING: Wrong number of args (" argc ") passed to " ctor)))
+     (when (and known-num-fields (not= known-num-fields argc) (:fn-arity *cljs-warnings*))
+       (warning :fn-arity env {:argc argc :ctor ctor}))
 
      {:env env :op :new :form form :ctor ctorexpr :args argexprs
       :children (into [ctorexpr] argexprs)})))
@@ -685,7 +792,7 @@
 
 (defn analyze-deps [deps]
   (doseq [dep deps]
-    (when-not (contains? @namespaces dep)
+    (when-not (contains? (::namespaces @env/*compiler*) dep)
       (let [relpath (ns->relpath dep)]
         (when (io/resource relpath)
           (no-warn
@@ -694,16 +801,14 @@
 (defn check-uses [uses env]
   (doseq [[sym lib] uses]
     (when (and (:undeclared *cljs-warnings*)
-               (= (get-in @namespaces [lib :defs sym] ::not-found) ::not-found))
-      (warning env
-        (str "WARNING: Referred var " lib "/" sym " does not exist")))))
+               (= (get-in @env/*compiler* [::namespaces lib :defs sym] ::not-found) ::not-found))
+      (warning :undeclared-ns-form env {:type :var :lib lib :sym sym}))))
 
-(defn check-uses-macros [uses-macros env]
-  (doseq [[sym lib] uses-macros]
-    (when (and (:undeclared *cljs-warnings*)
+(defn check-use-macros [use-macros env]
+  (doseq [[sym lib] use-macros]
+    (when (and (:undeclared-ns *cljs-warnings*)
                (nil? (.findInternedVar ^clojure.lang.Namespace (find-ns lib) sym)))
-      (warning env
-        (str "WARNING: Referred macro " lib "/" sym " does not exist")))))
+      (warning :undeclared-ns env {:type :macro :lib lib :sym sym}))))
 
 (defn- ns-defaults
   "Returns ns defaults. Returns nil if no defaults set.
@@ -796,21 +901,15 @@
                                (let [[lib & opts] spec
                                      {alias :as referred :refer :or {alias lib}} (apply hash-map opts)
                                      [rk uk] (if macros? [:require-macros :use-macros] [:require :use])]
+                                 (when-not (or (symbol? alias) (nil? alias))
+                                   (throw (error env (error-msg spec ":as must be followed by a symbol in :require / :require-macros"))))
                                  (when alias
-                                   ;; we need to create a fake namespace so the reader knows about aliases
-                                   ;; for resolving keywords like ::f/bar
-                                   (binding [*ns* (create-ns name)]
-                                     (let [^clojure.lang.Namespace ns (create-ns lib)]
-                                       (ns-unalias *ns* alias)
-                                       (clojure.core/alias alias (.name ns))))
                                    (let [alias-type (if macros? :macros :fns)]
                                      (when (contains? (alias-type @aliases) alias)
                                        (throw (error env (error-msg spec ":as alias must be unique"))))
                                      (swap! aliases
                                             update-in [alias-type]
                                             conj alias)))
-                                 (when-not (or (symbol? alias) (nil? alias))
-                                   (throw (error env (error-msg spec ":as must be followed by a symbol in :require / :require-macros"))))
                                  (when-not (or (and (sequential? referred) (every? symbol? referred))
                                                (nil? referred))
                                    (throw (error env (error-msg spec ":refer must be followed by a sequence of symbols in :require / :require-macros"))))
@@ -825,18 +924,25 @@
                          (throw (error env (error-msg spec "Only [lib.ns :only (names)] specs supported in :use / :use-macros"))))
                        [lib :refer referred])
         parse-import-spec (fn parse-import-spec [spec]
-                            (when-not (and (symbol? spec) (nil? (namespace spec)))
-                              (throw (error env (error-msg spec "Only lib.Ctor specs supported in :import"))))
-                            (swap! deps conj spec)
-                            (let [ctor-sym (symbol (last (string/split (str spec) #"\.")))]
-                              {:import  {ctor-sym spec}
-                               :require {ctor-sym spec}}))
+                            (when-not (or (and (sequential? spec)
+                                               (every? symbol? spec))
+                                          (and (symbol? spec) (nil? (namespace spec))))
+                              (throw (error env (error-msg spec "Only lib.ns.Ctor or [lib.ns Ctor*] spec supported in :import"))))
+                            (let [import-map (if (sequential? spec)
+                                               (->> (rest spec)
+                                                 (map #(vector % (symbol (str (first spec) "." %))))
+                                                 (into {}))
+                                               {(symbol (last (string/split (str spec) #"\."))) spec})]
+                              (doseq [[_ spec] import-map]
+                                (swap! deps conj spec))
+                              {:import  import-map
+                               :require import-map}))
         spec-parsers {:require        (partial parse-require-spec false)
                       :require-macros (partial parse-require-spec true)
                       :use            (comp (partial parse-require-spec false) use->require)
                       :use-macros     (comp (partial parse-require-spec true) use->require)
                       :import         parse-import-spec}
-        {uses :use requires :require uses-macros :use-macros requires-macros :require-macros imports :import :as params}
+        {uses :use requires :require use-macros :use-macros require-macros :require-macros imports :import :as params}
         (reduce (fn [m [k & libs]]
                   (when-not (#{:use :use-macros :require :require-macros :import} k)
                     (throw (error env "Only :refer-clojure, :require, :require-macros, :use and :use-macros libspecs supported")))
@@ -851,29 +957,26 @@
       (check-uses uses env))
     (set! *cljs-ns* name)
     (load-core)
-    (doseq [nsym (concat (vals requires-macros) (vals uses-macros))]
+    (doseq [nsym (concat (vals require-macros) (vals use-macros))]
       (clojure.core/require nsym))
-    (when (seq uses-macros)
-      (check-uses-macros uses-macros env))
-    (swap! namespaces #(-> %
-                           (assoc-in [name :name] name)
-                           (assoc-in [name :doc] docstring)
-                           (assoc-in [name :excludes] excludes)
-                           (assoc-in [name :uses] uses)
-                           (assoc-in [name :requires] requires)
-                           (assoc-in [name :uses-macros] uses-macros)
-                           (assoc-in [name :requires-macros]
-                                     (into {} (map (fn [[alias nsym]]
-                                                     [alias (find-ns nsym)])
-                                                   requires-macros)))
-                           (assoc-in [name :imports] imports)))
+    (when (seq use-macros)
+      (check-use-macros use-macros env))
+    (swap! env/*compiler* update-in [::namespaces name] assoc
+           :name name
+           :doc docstring
+           :excludes excludes
+           :uses uses
+           :requires requires
+           :use-macros use-macros
+           :require-macros require-macros
+           :imports imports)
     {:env env :op :ns :form form :name name :doc docstring :uses uses :requires requires :imports imports
-     :uses-macros uses-macros :requires-macros requires-macros :excludes excludes}))
+     :use-macros use-macros :require-macros require-macros :excludes excludes}))
 
 (defmethod parse 'deftype*
   [_ env [_ tsym fields pmasks :as form] _]
   (let [t (:name (resolve-var (dissoc env :locals) tsym))]
-    (swap! namespaces update-in [(-> env :ns :name) :defs tsym]
+    (swap! env/*compiler* update-in [::namespaces (-> env :ns :name) :defs tsym]
            (fn [m]
              (let [m (assoc (or m {})
                        :name t
@@ -887,7 +990,7 @@
 (defmethod parse 'defrecord*
   [_ env [_ tsym fields pmasks :as form] _]
   (let [t (:name (resolve-var (dissoc env :locals) tsym))]
-    (swap! namespaces update-in [(-> env :ns :name) :defs tsym]
+    (swap! env/*compiler* update-in [::namespaces (-> env :ns :name) :defs tsym]
            (fn [m]
              (let [m (assoc (or m {}) :name t :type true)]
                (merge m
@@ -982,7 +1085,9 @@
                    (if (= -1 idx)
                      (list s)
                      (let [end (.indexOf s "}" idx)]
-                       (cons (subs s 0 idx) (seg (subs s (inc end))))))))
+                       (lazy-seq
+                         (cons (subs s 0 idx)
+                           (seg (subs s (inc end)))))))))
            enve (assoc env :context :expr)
            argexprs (vec (map #(analyze enve %) args))]
        {:env env :op :js :segs (seg jsform) :args argexprs
@@ -994,7 +1099,10 @@
                        (list s)
                        (let [end (.indexOf s "}" idx)
                              inner (:name (resolve-existing-var env (symbol (subs s (+ 2 idx) end))))]
-                         (cons (subs s 0 idx) (cons inner (interp (subs s (inc end)))))))))]
+                         (lazy-seq
+                           (cons (subs s 0 idx)
+                             (cons inner
+                               (interp (subs s (inc end))))))))))]
       {:env env :op :js :form form :code (apply str (interp jsform))
        :tag (-> form meta :tag) :js-op (-> form meta :js-op)})))
 
@@ -1010,12 +1118,11 @@
          (when (and (not (some #{argc} (map count method-params)))
                     (or (not variadic)
                         (and variadic (< argc max-fixed-arity))))
-           (warning env
-             (str "WARNING: Wrong number of args (" argc ") passed to " name)))))
+           (warning :fn-arity env {:name name
+                                   :argc argc}))))
      (if (and (:fn-deprecated *cljs-warnings*) (-> fexpr :info :deprecated)
               (not (-> form meta :deprecation-nowarn)))
-       (warning env
-         (str "WARNING: " (-> fexpr :info :name) " is deprecated.")))
+       (warning :fn-deprecated env {:fexpr fexpr}))
      {:env env :op :invoke :form form :f fexpr :args argexprs
       :tag (or (-> fexpr :info :tag) (-> form meta :tag)) :children (into [fexpr] argexprs)})))
 
@@ -1036,17 +1143,17 @@
   (let [mvar
         (when-not (or (-> env :locals sym)        ;locals hide macros
                       (and (or (-> env :ns :excludes sym)
-                               (get-in @namespaces [(-> env :ns :name) :excludes sym]))
-                           (not (or (-> env :ns :uses-macros sym)
-                                    (get-in @namespaces [(-> env :ns :name) :uses-macros sym])))))
+                               (get-in @env/*compiler* [::namespaces (-> env :ns :name) :excludes sym]))
+                           (not (or (-> env :ns :use-macros sym)
+                                    (get-in @env/*compiler* [::namespaces (-> env :ns :name) :use-macros sym])))))
           (if-let [nstr (namespace sym)]
             (when-let [ns (cond
                            (= "clojure.core" nstr) (find-ns 'cljs.core)
                            (.contains nstr ".") (find-ns (symbol nstr))
                            :else
-                           (-> env :ns :requires-macros (get (symbol nstr))))]
+                           (some-> env :ns :require-macros (get (symbol nstr)) find-ns))]
               (.findInternedVar ^clojure.lang.Namespace ns (symbol (name sym))))
-            (if-let [nsym (-> env :ns :uses-macros sym)]
+            (if-let [nsym (-> env :ns :use-macros sym)]
               (.findInternedVar ^clojure.lang.Namespace (find-ns nsym) sym)
               (.findInternedVar ^clojure.lang.Namespace (find-ns 'cljs.core) sym))))]
     (when (and mvar (.isMacro ^clojure.lang.Var mvar))
@@ -1151,41 +1258,64 @@
   ([env form] (analyze env form nil))
   ([env form name]
    (wrapping-errors env
-     (let [form (if (instance? clojure.lang.LazySeq form)
-                  (or (seq form) ())
-                  form)]
-       (load-core)
-       (cond
-        (symbol? form) (analyze-symbol env form)
-        (and (seq? form) (seq form)) (analyze-seq env form name)
-        (map? form) (analyze-map env form)
-        (vector? form) (analyze-vector env form)
-        (set? form) (analyze-set env form)
-        (keyword? form) (analyze-keyword env form)
-        (= form ()) (analyze-list env form)
-        :else {:op :constant :env env :form form})))))
+     (binding [reader/*alias-map* (or reader/*alias-map* {})]
+       (let [form (if (instance? clojure.lang.LazySeq form)
+                    (or (seq form) ())
+                    form)]
+         (load-core)
+         (cond
+          (symbol? form) (analyze-symbol env form)
+          (and (seq? form) (seq form)) (analyze-seq env form name)
+          (map? form) (analyze-map env form)
+          (vector? form) (analyze-vector env form)
+          (set? form) (analyze-set env form)
+          (keyword? form) (analyze-keyword env form)
+          (= form ()) (analyze-list env form)
+          :else {:op :constant :env env :form form}))))))
+
+(defn- source-path
+  "Returns a path suitable for providing to tools.reader as a 'filename'."
+  [x]
+  (cond
+   (instance? File x) (.getAbsolutePath ^File x)
+   :default (str x)))
 
 (defn forms-seq
-  "Seq of forms in a Clojure or ClojureScript file."
-  [f]
-  (let [rdr (readers/indexing-push-back-reader (slurp f) 1 f)
-        forms-seq*
-        (fn forms-seq* []
-          (lazy-seq
-            (if-let [form (binding [*ns* (create-ns *cljs-ns*)] (reader/read rdr nil nil))]
-              (cons form (forms-seq*)))))]
-    (forms-seq*)))
+  "Seq of Clojure/ClojureScript forms from [f], which can be anything for which
+`clojure.java.io/reader` can produce a `java.io.Reader`. Optionally accepts a [filename]
+argument, which the reader will use in any emitted errors."
+  ([f] (forms-seq f (source-path f)))
+  ([f filename]
+     (let [rdr (readers/indexing-push-back-reader (java.io.PushbackReader. (io/reader f)) 1 filename)
+           forms-seq*
+           (fn forms-seq* []
+             (lazy-seq
+              (let [eof-sentinel (Object.)
+                    form (binding [*ns* (create-ns *cljs-ns*)
+                                   reader/*alias-map*
+                                   (apply merge
+                                          ((juxt :requires :requires-macros)
+                                           (get-namespace *cljs-ns*)))]
+                           (reader/read rdr nil eof-sentinel))]
+                (if (identical? form eof-sentinel)
+                  nil
+                  (cons form (forms-seq*))))))]
+       (forms-seq*))))
 
 (defn analyze-file [f]
   (let [res (cond
-              (instance? java.io.File f) f
-              (re-find #"^file://" f) (java.net.URL. f)
-              :else (io/resource f))]
+             (instance? File f) f
+             (re-find #"^file://" f) (java.net.URL. f)
+             :else (io/resource f))]
     (assert res (str "Can't find " f " in classpath"))
     (binding [*cljs-ns* 'cljs.user
-              *cljs-file* (if (instance? java.io.File res)
-                            (.getPath ^java.io.File res)
-                            (.getPath ^java.net.URL res))]
+              *cljs-file* (if (instance? File res)
+                            (.getPath ^File res)
+                            (.getPath ^java.net.URL res))
+              reader/*alias-map* (or reader/*alias-map* {})
+              env/*compiler* (if (bound? #'env/*compiler*)
+                               env/*compiler*
+                               (env/default-compiler-env))]
       (let [env (empty-env)]
         (doseq [form (seq (forms-seq res))]
           (let [env (assoc env :ns (get-namespace *cljs-ns*))]

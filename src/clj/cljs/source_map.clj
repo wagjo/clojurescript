@@ -152,6 +152,14 @@
             [] cols)))
       [] lines)))
 
+(defn relativize-path [path {:keys [output-dir relpaths]}]
+  (cond
+    (re-find #"\.jar!/" path)
+    (str output-dir (second (string/split path #"\.jar!")))    
+
+    :else
+    (str output-dir "/" (get relpaths path))))
+
 (defn encode
   "Take an internal source map representation represented as nested
    sorted maps of file, line, column and return a source map v3 JSON
@@ -193,13 +201,19 @@
       (json/pprint 
        {"version" 3
         "file" (:file opts)
-        "sources" (into [] (keys m))
+        "sources" (into []
+                    (let [paths (keys m)
+                          f (if (:output-dir opts)
+                              #(relativize-path % opts)
+                              #(last (string/split % #"/")))]
+                      (map f paths)))
         "lineCount" (:lines opts)
         "mappings" (->> (lines->segs @lines)
-                        (map #(string/join "," %))
-                        (string/join ";"))
-        "names" (into [] (map (set/map-invert @names->idx)
-                              (range (count @names->idx))))}
+                     (map #(string/join "," %))
+                     (string/join ";"))
+        "names" (into []
+                  (map (set/map-invert @names->idx)
+                    (range (count @names->idx))))}
        :escape-slash false))))
 
 ;; -----------------------------------------------------------------------------
