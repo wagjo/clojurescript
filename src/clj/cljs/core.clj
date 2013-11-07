@@ -16,7 +16,7 @@
                             when when-first when-let when-not while with-bindings with-in-str
                             with-loading-context with-local-vars with-open with-out-str with-precision with-redefs
                             satisfies? identical? true? false? number? nil? instance? symbol? keyword? string? str get
-                            make-array
+                            make-array vector list hash-map array-map hash-set
 
                             aget aset
                             + - * / < <= > >= == zero? pos? neg? inc dec max min mod
@@ -78,7 +78,7 @@
                            (if (seq bs)
                              (core/let [firstb (first bs)]
                                (cond
-                                 (= firstb '&) (recur (pb ret (second bs) (list `nthnext gvec n))
+                                 (= firstb '&) (recur (pb ret (second bs) (core/list `nthnext gvec n))
                                                       n
                                                       (nnext bs)
                                                       true)
@@ -87,8 +87,8 @@
                                          (throw (new Exception "Unsupported binding form, only :as can follow & parameter"))
                                          (recur (pb ret firstb
                                                     (if arr-vec?
-                                                      (list 'js* "(~{}[~{}])" (list `.-arr gvec) n)
-                                                      (list `nth gvec n nil)))
+                                                      (core/list 'js* "(~{}[~{}])" (list `.-arr gvec) n)
+                                                      (core/list `nth gvec n nil)))
                                                 (core/inc n)
                                                 (next bs)
                                                 seen-rest?))))
@@ -98,7 +98,7 @@
                        (core/let [gmap (gensym "map__")
                                   defaults (:or b)]
                          (core/loop [ret (-> bvec (conj gmap) (conj v)
-                                             (conj gmap) (conj `(if (seq? ~gmap) (apply hash-map ~gmap) ~gmap))
+                                             (conj gmap) (conj `(if (seq? ~gmap) (apply core/hash-map ~gmap) ~gmap))
                                              ((fn [ret]
                                                 (if (:as b)
                                                   (conj ret (:as b) gmap)
@@ -109,14 +109,14 @@
                                                     (dissoc bes (key entry))
                                                     ((key entry) bes)))
                                           (dissoc b :as :or)
-                                          {:keys #(keyword (core/str %)), :strs core/str, :syms #(list `quote %)})]
+                                          {:keys #(keyword (core/str %)), :strs core/str, :syms #(core/list `quote %)})]
                            (if (seq bes)
                              (core/let [bb (key (first bes))
                                         bk (val (first bes))
                                         has-default (contains? defaults bb)]
                                (recur (pb ret bb (if has-default
-                                                   (list `get gmap bk (defaults bb))
-                                                   (list `get gmap bk)))
+                                                   (core/list `get gmap bk (defaults bb))
+                                                   (core/list `get gmap bk)))
                                       (next bes)))
                              ret))))]
                     (cond
@@ -159,7 +159,7 @@
                             (if (core/symbol? b)
                               (conj ret g v)
                               (conj ret g v b g)))
-                          [] (map vector bs vs gs))]
+                          [] (map core/vector bs vs gs))]
           `(let ~bfs
              (loop* ~(vec (interleave gs gs))
                (let ~(vec (interleave bs gs))
@@ -244,68 +244,68 @@
 
 ;; internal - do not use.
 (defmacro coercive-not [x]
-  (bool-expr (list 'js* "(!~{})" x)))
+  (bool-expr (core/list 'js* "(!~{})" x)))
 
 ;; internal - do not use.
 (defmacro coercive-not= [x y]
-  (bool-expr (list 'js* "(~{} != ~{})" x y)))
+  (bool-expr (core/list 'js* "(~{} != ~{})" x y)))
 
 ;; internal - do not use.
 (defmacro coercive-= [x y]
-  (bool-expr (list 'js* "(~{} == ~{})" x y)))
+  (bool-expr (core/list 'js* "(~{} == ~{})" x y)))
 
 ;; internal - do not use.
 (defmacro coercive-boolean [x]
-  (with-meta (list 'js* "~{}" x)
+  (with-meta (core/list 'js* "~{}" x)
     {:tag 'boolean}))
 
 ;; internal - do not use.
 (defmacro truth_ [x]
   (assert (clojure.core/symbol? x) "x is substituted twice")
-  (list 'js* "(~{} != null && ~{} !== false)" x x))
+  (core/list 'js* "(~{} != null && ~{} !== false)" x x))
 
 ;; internal - do not use
 (defmacro js-arguments []
-  (list 'js* "arguments"))
+  (core/list 'js* "arguments"))
 
 (defmacro js-delete [obj key]
-  (list 'js* "delete ~{}[~{}]" obj key))
+  (core/list 'js* "delete ~{}[~{}]" obj key))
 
 (defmacro true? [x]
-  (bool-expr (list 'js* "~{} === true" x)))
+  (bool-expr (core/list 'js* "~{} === true" x)))
 
 (defmacro false? [x]
-  (bool-expr (list 'js* "~{} === false" x)))
+  (bool-expr (core/list 'js* "~{} === false" x)))
 
 (defmacro array? [x]
-  (bool-expr (list 'js* "~{} instanceof Array" x)))
+  (bool-expr (core/list 'js* "~{} instanceof Array" x)))
 
 (defmacro string? [x]
-  (bool-expr (list 'js* "typeof ~{} === 'string'" x)))
+  (bool-expr (core/list 'js* "typeof ~{} === 'string'" x)))
 
 ;; TODO: x must be a symbol, not an arbitrary expression
 (defmacro exists? [x]
   (bool-expr
-    (list 'js* "typeof ~{} !== 'undefined'"
+    (core/list 'js* "typeof ~{} !== 'undefined'"
       (vary-meta x assoc :cljs.analyzer/no-resolve true))))
 
 (defmacro undefined? [x]
-  (bool-expr (list 'js* "(void 0 === ~{})" x)))
+  (bool-expr (core/list 'js* "(void 0 === ~{})" x)))
 
 (defmacro identical? [a b]
-  (bool-expr (list 'js* "(~{} === ~{})" a b)))
+  (bool-expr (core/list 'js* "(~{} === ~{})" a b)))
 
 (defmacro instance? [t o]
   ;; Google Closure warns about some references to RegExp, so
   ;; (instance? RegExp ...) needs to be inlined, but the expansion
   ;; should preserve the order of argument evaluation.
   (bool-expr (if (clojure.core/symbol? t)
-               (list 'js* "(~{} instanceof ~{})" o t)
+               (core/list 'js* "(~{} instanceof ~{})" o t)
                `(let [t# ~t o# ~o]
                   (~'js* "(~{} instanceof ~{})" o# t#)))))
 
 (defmacro number? [x]
-  (bool-expr (list 'js* "typeof ~{} === 'number'" x)))
+  (bool-expr (core/list 'js* "typeof ~{} === 'number'" x)))
 
 (defmacro symbol? [x]
   (bool-expr `(instance? Symbol ~x)))
@@ -315,14 +315,14 @@
 
 (defmacro aget
   ([a i]
-     (list 'js* "(~{}[~{}])" a i))
+     (core/list 'js* "(~{}[~{}])" a i))
   ([a i & idxs]
      (let [astr (apply core/str (repeat (count idxs) "[~{}]"))]
       `(~'js* ~(core/str "(~{}[~{}]" astr ")") ~a ~i ~@idxs))))
 
 (defmacro aset
   ([a i v]
-    (list 'js* "(~{}[~{}] = ~{})" a i v))
+    (core/list 'js* "(~{}[~{}] = ~{})" a i v))
   ([a idx idx2 & idxv]
     (let [n    (core/dec (count idxv))
           astr (apply core/str (repeat n "[~{}]"))]
@@ -331,7 +331,7 @@
 (defmacro +
   ([] 0)
   ([x] x)
-  ([x y] (list 'js* "(~{} + ~{})" x y))
+  ([x y] (core/list 'js* "(~{} + ~{})" x y))
   ([x y & more] `(+ (+ ~x ~y) ~@more)))
 
 (defmacro byte [x] x)
@@ -388,49 +388,49 @@
   ([& xs] `(- ~@xs)))
 
 (defmacro -
-  ([x] (list 'js* "(- ~{})" x))
-  ([x y] (list 'js* "(~{} - ~{})" x y))
+  ([x] (core/list 'js* "(- ~{})" x))
+  ([x y] (core/list 'js* "(~{} - ~{})" x y))
   ([x y & more] `(- (- ~x ~y) ~@more)))
 
 (defmacro *
   ([] 1)
   ([x] x)
-  ([x y] (list 'js* "(~{} * ~{})" x y))
+  ([x y] (core/list 'js* "(~{} * ~{})" x y))
   ([x y & more] `(* (* ~x ~y) ~@more)))
 
 (defmacro /
   ([x] `(/ 1 ~x))
-  ([x y] (list 'js* "(~{} / ~{})" x y))
+  ([x y] (core/list 'js* "(~{} / ~{})" x y))
   ([x y & more] `(/ (/ ~x ~y) ~@more)))
 
 (defmacro divide
   ([x] `(/ 1 ~x))
-  ([x y] (list 'js* "(~{} / ~{})" x y))
+  ([x y] (core/list 'js* "(~{} / ~{})" x y))
   ([x y & more] `(/ (/ ~x ~y) ~@more)))
 
 (defmacro <
   ([x] true)
-  ([x y] (bool-expr (list 'js* "(~{} < ~{})" x y)))
+  ([x y] (bool-expr (core/list 'js* "(~{} < ~{})" x y)))
   ([x y & more] `(and (< ~x ~y) (< ~y ~@more))))
 
 (defmacro <=
   ([x] true)
-  ([x y] (bool-expr (list 'js* "(~{} <= ~{})" x y)))
+  ([x y] (bool-expr (core/list 'js* "(~{} <= ~{})" x y)))
   ([x y & more] `(and (<= ~x ~y) (<= ~y ~@more))))
 
 (defmacro >
   ([x] true)
-  ([x y] (bool-expr (list 'js* "(~{} > ~{})" x y)))
+  ([x y] (bool-expr (core/list 'js* "(~{} > ~{})" x y)))
   ([x y & more] `(and (> ~x ~y) (> ~y ~@more))))
 
 (defmacro >=
   ([x] true)
-  ([x y] (bool-expr (list 'js* "(~{} >= ~{})" x y)))
+  ([x y] (bool-expr (core/list 'js* "(~{} >= ~{})" x y)))
   ([x y & more] `(and (>= ~x ~y) (>= ~y ~@more))))
 
 (defmacro ==
   ([x] true)
-  ([x y] (bool-expr (list 'js* "(~{} === ~{})" x y)))
+  ([x y] (bool-expr (core/list 'js* "(~{} === ~{})" x y)))
   ([x y & more] `(and (== ~x ~y) (== ~y ~@more))))
 
 (defmacro dec [x]
@@ -461,63 +461,63 @@
   ([x y & more] `(min (min ~x ~y) ~@more)))
 
 (defmacro js-mod [num div]
-  (list 'js* "(~{} % ~{})" num div))
+  (core/list 'js* "(~{} % ~{})" num div))
 
 (defmacro bit-not [x]
-  (list 'js* "(~ ~{})" x))
+  (core/list 'js* "(~ ~{})" x))
 
 (defmacro bit-and
-  ([x y] (list 'js* "(~{} & ~{})" x y))
+  ([x y] (core/list 'js* "(~{} & ~{})" x y))
   ([x y & more] `(bit-and (bit-and ~x ~y) ~@more)))
 
 ;; internal do not use
 (defmacro unsafe-bit-and
-  ([x y] (bool-expr (list 'js* "(~{} & ~{})" x y)))
+  ([x y] (bool-expr (core/list 'js* "(~{} & ~{})" x y)))
   ([x y & more] `(unsafe-bit-and (unsafe-bit-and ~x ~y) ~@more)))
 
 (defmacro bit-or
-  ([x y] (list 'js* "(~{} | ~{})" x y))
+  ([x y] (core/list 'js* "(~{} | ~{})" x y))
   ([x y & more] `(bit-or (bit-or ~x ~y) ~@more)))
 
 (defmacro int [x]
   `(bit-or ~x 0))
 
 (defmacro bit-xor
-  ([x y] (list 'js* "(~{} ^ ~{})" x y))
+  ([x y] (core/list 'js* "(~{} ^ ~{})" x y))
   ([x y & more] `(bit-xor (bit-xor ~x ~y) ~@more)))
 
 (defmacro bit-and-not
-  ([x y] (list 'js* "(~{} & ~~{})" x y))
+  ([x y] (core/list 'js* "(~{} & ~~{})" x y))
   ([x y & more] `(bit-and-not (bit-and-not ~x ~y) ~@more)))
 
 (defmacro bit-clear [x n]
-  (list 'js* "(~{} & ~(1 << ~{}))" x n))
+  (core/list 'js* "(~{} & ~(1 << ~{}))" x n))
 
 (defmacro bit-flip [x n]
-  (list 'js* "(~{} ^ (1 << ~{}))" x n))
+  (core/list 'js* "(~{} ^ (1 << ~{}))" x n))
 
 (defmacro bit-test [x n]
-  (list 'js* "((~{} & (1 << ~{})) != 0)" x n))
+  (core/list 'js* "((~{} & (1 << ~{})) != 0)" x n))
 
 (defmacro bit-shift-left [x n]
-  (list 'js* "(~{} << ~{})" x n))
+  (core/list 'js* "(~{} << ~{})" x n))
 
 (defmacro bit-shift-right [x n]
-  (list 'js* "(~{} >> ~{})" x n))
+  (core/list 'js* "(~{} >> ~{})" x n))
 
 (defmacro bit-shift-right-zero-fill [x n]
-  (list 'js* "(~{} >>> ~{})" x n))
+  (core/list 'js* "(~{} >>> ~{})" x n))
 
 (defmacro bit-set [x n]
-  (list 'js* "(~{} | (1 << ~{}))" x n))
+  (core/list 'js* "(~{} | (1 << ~{}))" x n))
 
 ;; internal
 (defmacro mask [hash shift]
-  (list 'js* "((~{} >>> ~{}) & 0x01f)" hash shift))
+  (core/list 'js* "((~{} >>> ~{}) & 0x01f)" hash shift))
 
 ;; internal
 (defmacro bitpos [hash shift]
-  (list 'js* "(1 << ~{})" `(mask ~hash ~shift)))
+  (core/list 'js* "(1 << ~{})" `(mask ~hash ~shift)))
 
 ;; internal
 (defmacro caching-hash [coll hash-fn hash-key]
@@ -594,7 +594,7 @@
        (new ~t ~@locals nil))))
 
 (defmacro ^:private js-this []
-  (list 'js* "this"))
+  (core/list 'js* "this"))
 
 (defmacro this-as
   "Defines a scope where JavaScript's implicit \"this\" is bound to the name provided."
@@ -652,7 +652,7 @@
   `(.. ~tsym -prototype ~(to-property sym)))
 
 (defn adapt-obj-params [type [[this & args :as sig] & body]]
-  (list (vec args)
+  (core/list (vec args)
     (list* 'this-as (vary-meta this assoc :tag type) body)))
 
 (defn adapt-ifn-params [type [[this & args :as sig] & body]]
@@ -878,7 +878,7 @@
                                                 (not-empty (dissoc ~'__extmap k#))
                                                 nil)))
                   'ISeqable
-                  `(~'-seq [this#] (seq (concat [~@(map #(list `vector (keyword %) %) base-fields)]
+                  `(~'-seq [this#] (seq (concat [~@(map #(core/list `vector (keyword %) %) base-fields)]
                                                 ~'__extmap)))
 
                   'IPrintWithWriter
@@ -886,7 +886,7 @@
                                  (let [pr-pair# (fn [keyval#] (pr-sequential-writer writer# pr-writer "" " " "" opts# keyval#))]
                                    (pr-sequential-writer
                                     writer# pr-pair# ~pr-open ", " "}" opts#
-                                    (concat [~@(map #(list `vector (keyword %) %) base-fields)]
+                                    (concat [~@(map #(core/list `vector (keyword %) %) base-fields)]
                                             ~'__extmap))))
                   ])
           [fpps pmasks] (prepare-protocol-masks env impls)
@@ -913,7 +913,7 @@
     `(let []
        ~(emit-defrecord &env rsym r fields impls)
        (set! (.-cljs$lang$type ~r) true)
-       (set! (.-cljs$lang$ctorPrSeq ~r) (fn [this#] (list ~(core/str r))))
+       (set! (.-cljs$lang$ctorPrSeq ~r) (fn [this#] (core/list ~(core/str r))))
        (set! (.-cljs$lang$ctorPrWriter ~r) (fn [this# writer#] (-write writer# ~(core/str r))))
        ~(build-positional-factory rsym r fields)
        ~(build-map-factory rsym r fields)
@@ -1016,9 +1016,9 @@
   (let [names (take-nth 2 bindings)
         vals (take-nth 2 (drop 1 bindings))
         tempnames (map (comp gensym name) names)
-        binds (map vector names vals)
-        resets (reverse (map vector names tempnames))
-        bind-value (fn [[k v]] (list 'set! k v))]
+        binds (map core/vector names vals)
+        resets (reverse (map core/vector names tempnames))
+        bind-value (fn [[k v]] (core/list 'set! k v))]
     `(let [~@(interleave tempnames names)]
        (try
         ~@(map bind-value binds)
@@ -1098,11 +1098,11 @@
                         (cond
                          (seq? test) (reduce (fn [m test]
                                                (let [test (if (core/symbol? test)
-                                                            (list 'quote test)
+                                                            (core/list 'quote test)
                                                             test)]
                                                  (assoc-test m test expr)))
                                              m test)
-                         (core/symbol? test) (assoc-test m (list 'quote test) expr)
+                         (core/symbol? test) (assoc-test m (core/list 'quote test) expr)
                          :else (assoc-test m test expr)))
                       {} (partition 2 clauses))
         esym (gensym)]
@@ -1279,6 +1279,32 @@
   [size]
   `(js/Array. ~size))
 
+(defmacro list
+  ([] ())
+  ([x & xs]
+    `(-conj (list ~@xs) ~x)))
+
+(defmacro vector
+  [& xs]
+  `[~@xs])
+
+(defmacro array-map
+  [& kvs]
+  (if (core/> (count kvs) 8)
+    `(hash-map ~@kvs)
+    `(cljs.core.PersistentArrayMap.fromArray (array ~@kvs) true)))
+
+(defmacro hash-map
+  [& kvs]
+  (let [pairs (partition 2 kvs)
+        ks    (map first pairs)
+        vs    (map second pairs)]
+    `(cljs.core.PersistentHashMap.fromArrays (array ~@ks) (array ~@vs))))
+
+(defmacro hash-set
+  [& xs]
+  `#{~@xs})
+
 (defmacro js-obj [& rest]
   (let [kvs-str (->> (repeat "~{}:~{}")
                      (take (quot (count rest) 2))
@@ -1287,10 +1313,10 @@
     (list* 'js* (core/str "{" kvs-str "}") rest)))
 
 (defmacro alength [a]
-  (list 'js* "~{}.length" a))
+  (core/list 'js* "~{}.length" a))
 
 (defmacro aclone [a]
-  (list 'js* "~{}.slice()" a))
+  (core/list 'js* "~{}.slice()" a))
 
 (defmacro amap
   "Maps an expression across an array a, using an index named idx, and
@@ -1336,7 +1362,7 @@
   "Throws an exception if the given option map contains keys not listed
   as valid, else returns nil."
   [options & valid-keys]
-  (when (seq (apply disj (apply hash-set (keys options)) valid-keys))
+  (when (seq (apply disj (apply core/hash-set (keys options)) valid-keys))
     (throw
      (apply core/str "Only these options are valid: "
 	    (first valid-keys)
@@ -1373,7 +1399,7 @@
                       m)]
     (when (= (count options) 1)
       (throw (Exception. "The syntax for defmulti has changed. Example: (defmulti name dispatch-fn :default dispatch-value)")))
-    (let [options   (apply hash-map options)
+    (let [options   (apply core/hash-map options)
           default   (core/get options :default :default)]
       (check-valid-options options :default :hierarchy)
       `(def ~(with-meta mm-name m)
@@ -1460,4 +1486,4 @@
 
   (lazy-cat xs ys zs) === (concat (lazy-seq xs) (lazy-seq ys) (lazy-seq zs))"
   [& colls]
-  `(concat ~@(map #(list `lazy-seq %) colls)))
+  `(concat ~@(map #(core/list `lazy-seq %) colls)))

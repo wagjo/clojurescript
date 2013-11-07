@@ -8,7 +8,8 @@
 
 (ns ^{:doc "A namespace that exists solely to provide a place for \"compiler\"
 state that is accessed/maintained by many different components."}
-  cljs.env)
+  cljs.env
+  (:refer-clojure :exclude [ensure]))
 
 ;; bit of a misnomer, but: an atom containing a map that serves as the bag of
 ;; state for the compiler, writ large (including analyzer, emitter, and
@@ -31,7 +32,7 @@ state that is accessed/maintained by many different components."}
 ;;
 ;; Note that this var is functionally private to the compiler, and contains
 ;; implementation-dependent data.
-(def ^:dynamic *compiler*)
+(def ^:dynamic *compiler* nil)
 
 (defn default-compiler-env
   []
@@ -50,3 +51,15 @@ this namespace."
                                 (str "Compiler environment must be a map or atom containing a map, not "
                                      (class env#)))))]
      (binding [*compiler* env#] ~@body)))
+
+(defmacro ensure
+  [& body]
+  `(let [val# *compiler*]
+     (if (nil? val#)
+       (push-thread-bindings
+         (hash-map (var *compiler*) (default-compiler-env))))
+     (try
+       ~@body
+       (finally
+         (if (nil? val#)
+           (pop-thread-bindings))))))

@@ -276,7 +276,8 @@
   ([foreign ^URL url provides requires]
      (javascript-file foreign url nil provides requires nil nil))
   ([foreign ^URL url source-url provides requires lines source-map]
-     (JavaScriptFile. foreign url source-url (map name provides) (map name requires) lines source-map)))
+    (assert (first provides) (str source-url " does not provide a namespace"))
+    (JavaScriptFile. foreign url source-url (map name provides) (map name requires) lines source-map)))
 
 (defn map->javascript-file [m]
   (javascript-file
@@ -970,9 +971,11 @@
 
 (defn build
   "Given a source which can be compiled, produce runnable JavaScript."
-  ([source opts] (build source opts (if (bound? #'env/*compiler*)
-                                      env/*compiler*
-                                      (env/default-compiler-env))))
+  ([source opts]
+    (build source opts
+      (if-not (nil? env/*compiler*)
+        env/*compiler*
+        (env/default-compiler-env))))
   ([source opts compiler-env]
      (env/with-compiler-env compiler-env
        (let [opts (if (= :nodejs (:target opts))

@@ -3511,7 +3511,10 @@ reduces them without incurring seq initialization"
            (-as-transient cljs.core.ArrayVector/EMPTY)
            coll)))
 
-(defn vector [& args] (vec args))
+(defn vector [& args]
+  (if (instance? IndexedSeq args)
+    (cljs.core.PersistentVector.fromArray (.-arr args) true)
+    (vec args)))
 
 (declare subvec)
 
@@ -5197,12 +5200,12 @@ reduces them without incurring seq initialization"
 (set! cljs.core.PersistentHashMap.EMPTY (PersistentHashMap. nil 0 nil false nil 0))
 
 (set! cljs.core.PersistentHashMap.fromArrays
-      (fn [ks vs]
-        (let [len (alength ks)]
-          (loop [i 0 out (transient cljs.core.PersistentHashMap.EMPTY)]
-            (if (< i len)
-              (recur (inc i) (assoc! out (aget ks i) (aget vs i)))
-              (persistent! out))))))
+  (fn [ks vs]
+    (let [len (alength ks)]
+      (loop [i 0 ^not-native out (transient cljs.core.PersistentHashMap.EMPTY)]
+        (if (< i len)
+          (recur (inc i) (-assoc! out (aget ks i) (aget vs i)))
+          (persistent! out))))))
 
 (deftype TransientHashMap [^:mutable ^boolean edit
                            ^:mutable root

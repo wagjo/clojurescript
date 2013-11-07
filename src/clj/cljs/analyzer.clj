@@ -155,12 +155,12 @@
 ;; compiler-env atoms/maps they're using already; this value will yield only
 ;; `default-namespaces` when accessed outside the scope of a
 ;; compilation/analysis call
-(def namespaces (reify clojure.lang.IDeref
-                  (deref [_] (if (bound? #'env/*compiler*)
-                               (::namespaces @env/*compiler*)
-                               ;; TODO maybe this should throw an exception
-                               ;; instead of returning the default namespaces
-                               default-namespaces))))
+(def namespaces
+  (reify clojure.lang.IDeref
+    (deref [_]
+      (if-not (nil? env/*compiler*)
+        (::namespaces @env/*compiler*)
+        default-namespaces))))
 
 (defn get-namespace [key]
   (get-in @env/*compiler* [::namespaces key]))
@@ -1160,31 +1160,32 @@
       @mvar)))
 
 (defn macroexpand-1 [env form]
-  (let [op (first form)]
-    (if (specials op)
-      form
-      (if-let [mac (and (symbol? op) (get-expander op env))]
-        (binding [*ns* (create-ns *cljs-ns*)]
-          (let [form' (apply mac form env (rest form))]
-            (if (seq? form')
-              (let [sym' (first form')
-                    sym  (first form)]
-                (if (= sym' 'js*)
-                  (vary-meta form' assoc
-                    :js-op (if (namespace sym) sym (symbol "cljs.core" (str sym))))
-                  form'))
-              form')))
-        (if (symbol? op)
-          (let [opname (str op)]
-            (cond
-             (= (first opname) \.) (let [[target & args] (next form)]
-                                     (with-meta (list* '. target (symbol (subs opname 1)) args)
-                                       (meta form)))
-             (= (last opname) \.) (with-meta
-                                    (list* 'new (symbol (subs opname 0 (dec (count opname)))) (next form))
-                                    (meta form))
-             :else form))
-          form)))))
+  (env/ensure
+    (let [op (first form)]
+      (if (specials op)
+        form
+        (if-let [mac (and (symbol? op) (get-expander op env))]
+          (binding [*ns* (create-ns *cljs-ns*)]
+            (let [form' (apply mac form env (rest form))]
+              (if (seq? form')
+                (let [sym' (first form')
+                       sym  (first form)]
+                  (if (= sym' 'js*)
+                    (vary-meta form' assoc
+                      :js-op (if (namespace sym) sym (symbol "cljs.core" (str sym))))
+                    form'))
+                form')))
+          (if (symbol? op)
+            (let [opname (str op)]
+              (cond
+                (= (first opname) \.) (let [[target & args] (next form)]
+                                        (with-meta (list* '. target (symbol (subs opname 1)) args)
+                                          (meta form)))
+                (= (last opname) \.) (with-meta
+                                       (list* 'new (symbol (subs opname 0 (dec (count opname)))) (next form))
+                                       (meta form))
+                :else form))
+            form))))))
 
 (declare analyze-list)
 
@@ -1257,21 +1258,22 @@
   facilitate code walking without knowing the details of the op set."
   ([env form] (analyze env form nil))
   ([env form name]
-   (wrapping-errors env
-     (binding [reader/*alias-map* (or reader/*alias-map* {})]
-       (let [form (if (instance? clojure.lang.LazySeq form)
-                    (or (seq form) ())
-                    form)]
-         (load-core)
-         (cond
-          (symbol? form) (analyze-symbol env form)
-          (and (seq? form) (seq form)) (analyze-seq env form name)
-          (map? form) (analyze-map env form)
-          (vector? form) (analyze-vector env form)
-          (set? form) (analyze-set env form)
-          (keyword? form) (analyze-keyword env form)
-          (= form ()) (analyze-list env form)
-          :else {:op :constant :env env :form form}))))))
+    (env/ensure
+      (wrapping-errors env
+        (binding [reader/*alias-map* (or reader/*alias-map* {})]
+          (let [form (if (instance? clojure.lang.LazySeq form)
+                       (or (seq form) ())
+                       form)]
+            (load-core)
+            (cond
+              (symbol? form) (analyze-symbol env form)
+              (and (seq? form) (seq form)) (analyze-seq env form name)
+              (map? form) (analyze-map env form)
+              (vector? form) (analyze-vector env form)
+              (set? form) (analyze-set env form)
+              (keyword? form) (analyze-keyword env form)
+              (= form ()) (analyze-list env form)
+              :else {:op :constant :env env :form form})))))))
 
 (defn- source-path
   "Returns a path suitable for providing to tools.reader as a 'filename'."
@@ -1308,15 +1310,13 @@ argument, which the reader will use in any emitted errors."
              (re-find #"^file://" f) (java.net.URL. f)
              :else (io/resource f))]
     (assert res (str "Can't find " f " in classpath"))
-    (binding [*cljs-ns* 'cljs.user
-              *cljs-file* (if (instance? File res)
-                            (.getPath ^File res)
-                            (.getPath ^java.net.URL res))
-              reader/*alias-map* (or reader/*alias-map* {})
-              env/*compiler* (if (bound? #'env/*compiler*)
-                               env/*compiler*
-                               (env/default-compiler-env))]
-      (let [env (empty-env)]
-        (doseq [form (seq (forms-seq res))]
-          (let [env (assoc env :ns (get-namespace *cljs-ns*))]
-            (analyze env form)))))))
+    (env/ensure
+      (binding [*cljs-ns* 'cljs.user
+                *cljs-file* (if (instance? File res)
+                              (.getPath ^File res)
+                              (.getPath ^java.net.URL res))
+                reader/*alias-map* (or reader/*alias-map* {})]
+        (let [env (empty-env)]
+          (doseq [form (seq (forms-seq res))]
+            (let [env (assoc env :ns (get-namespace *cljs-ns*))]
+              (analyze env form))))))))
