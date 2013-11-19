@@ -3141,22 +3141,25 @@ reduces them without incurring seq initialization"
     (let [l (.-length arr)]
       (cond (zero? l) (throw (js/Error. "Can't pop empty vector"))
             (== l 1) (-with-meta ^not-native
-                                 cljs.core.ArrayVector/EMPTY meta)
+                                 cljs.core.ArrayVector.EMPTY meta)
             :else (ArrayVector. meta (.slice arr 0 (dec l)) nil))))
 
   ICollection
   (-conj [coll o]
-    (let [new-arr (.slice arr)]
-      (.push new-arr o)
-      (if (< (.-length arr) cljs.core.ArrayVector/PERSISTENTVECTOR_THRESHOLD)
+    (let [len (alength arr)
+          new-arr (make-array (inc len))]
+      (dotimes [i len]
+        (aset new-arr i (aget arr i)))
+      (aset new-arr len o)
+      (if (< (.-length arr) cljs.core.ArrayVector.PERSISTENTVECTOR_THRESHOLD)
         (ArrayVector. meta new-arr nil)
         (-with-meta ^not-native 
-         (cljs.core.PersistentVector/fromArray new-arr true)
+         (cljs.core.PersistentVector.fromArray new-arr true)
          meta))))
 
   IEmptyableCollection
   (-empty [coll] (-with-meta ^not-native
-                             cljs.core.ArrayVector/EMPTY meta))
+                             cljs.core.ArrayVector.EMPTY meta))
 
   ISequential
   IEquiv
@@ -3232,18 +3235,18 @@ reduces them without incurring seq initialization"
         (RSeq. coll (dec l) nil)
         ()))))
 
-(set! cljs.core.ArrayVector/EMPTY (ArrayVector. nil (array) 0))
+(set! cljs.core.ArrayVector.EMPTY (ArrayVector. nil (array) 0))
 
-(set! cljs.core.ArrayVector/PERSISTENTVECTOR_THRESHOLD 32)
+(set! cljs.core.ArrayVector.PERSISTENTVECTOR_THRESHOLD 32)
 
 (deftype TransientArrayVector [arr]
   ITransientCollection
   (-conj! [tcoll o]
     (.push arr o)
-    (if (< (.-length arr) cljs.core.ArrayVector/PERSISTENTVECTOR_THRESHOLD)
+    (if (< (.-length arr) cljs.core.ArrayVector.PERSISTENTVECTOR_THRESHOLD)
       tcoll
       (-as-transient ^not-native
-                     (cljs.core.PersistentVector/fromArray arr
+                     (cljs.core.PersistentVector.fromArray arr
                                                            true))))
   (-persistent! [tcoll]
     (ArrayVector. nil arr nil)) ;; should clone here?
@@ -3540,7 +3543,7 @@ reduces them without incurring seq initialization"
 (defn vec [coll]
   (-persistent!
    (reduce -conj!
-           (-as-transient cljs.core.ArrayVector/EMPTY)
+           (-as-transient cljs.core.ArrayVector.EMPTY)
            coll)))
 
 (defn vector [& args]
@@ -3594,7 +3597,7 @@ reduces them without incurring seq initialization"
 
   IEmptyableCollection
   (-empty [coll]
-    (with-meta cljs.core.ArrayVector/EMPTY meta))
+    (with-meta cljs.core.ArrayVector.EMPTY meta))
 
   IChunkedSeq
   (-chunked-first [coll]
@@ -3657,7 +3660,7 @@ reduces them without incurring seq initialization"
     (build-subvec meta (-assoc-n v end o) start (inc end) nil))
 
   IEmptyableCollection
-  (-empty [coll] (with-meta cljs.core.ArrayVector/EMPTY meta))
+  (-empty [coll] (with-meta cljs.core.ArrayVector.EMPTY meta))
 
   ISequential
   IEquiv
