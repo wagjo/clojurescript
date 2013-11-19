@@ -87,7 +87,7 @@
                                          (throw (new Exception "Unsupported binding form, only :as can follow & parameter"))
                                          (recur (pb ret firstb
                                                     (if arr-vec?
-                                                      (core/list 'js* "(~{}[~{}])" (list `.-arr gvec) n)
+                                                      (core/list 'js* "(~{}[~{}])" (core/list `.-arr gvec) n)
                                                       (core/list `nth gvec n nil)))
                                                 (core/inc n)
                                                 (next bs)
