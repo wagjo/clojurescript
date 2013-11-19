@@ -52,10 +52,9 @@
     "volatile" "while" "with" "yield" "methods"
     "null"})
 
-(def ^:dynamic *cljs-source-map* nil)
-(def ^:dynamic *cljs-gen-col* nil)
-(def ^:dynamic *cljs-gen-line* nil)
+(def ^:dynamic *source-map-data* nil)
 (def ^:dynamic *lexical-renames* {})
+
 (def cljs-reserved-file-names #{"deps.cljs"})
 
 (defmacro ^:private debug-prn
@@ -131,6 +130,24 @@
 
 (defn emit [ast]
   (env/ensure
+    (when *source-map-data*
+      (let [{:keys [env]} ast]
+        (when (:line env)
+          (let [{:keys [line column]} env]
+            (swap! *source-map-data*
+              (fn [m]
+                (let [minfo (cond-> {:gcol (:gen-col m)
+                                     :gline (:gen-line m)}
+                              (= (:op ast) :var)
+                              (assoc :name (str (-> ast :info :name))))]
+                  ; Dec the line number for 0-indexed line numbers.
+                  ; tools.reader has 0-indexed line number, chrome
+                  ; expects 1-indexed source maps.
+                  (update-in m [:source-map (dec line)]
+                    (fnil (fn [line]
+                            (update-in line [(or column 0)]
+                              (fnil (fn [column] (conj column minfo)) [])))
+                      (sorted-map))))))))))
     (emit* ast)))
 
 (defn emits [& xs]
@@ -141,18 +158,21 @@
      (seq? x) (apply emits x)
      (fn? x)  (x)
      :else (let [s (print-str x)]
-             (when *cljs-gen-col*
-               (swap! *cljs-gen-col* (fn [col] (+ col (count s)))))
+             (when *source-map-data*
+               (swap! *source-map-data*
+                 update-in [:gen-col] #(+ % (count s))))
              (print s))))
   nil)
 
 (defn emitln [& xs]
   (apply emits xs)
   (println)
-  (when *cljs-gen-line*
-    (swap! *cljs-gen-line* inc))
-  (when *cljs-gen-col*
-    (reset! *cljs-gen-col* 0))
+  (when *source-map-data*
+    (swap! *source-map-data*
+      (fn [{:keys [gen-line] :as m}]
+        (assoc m
+          :gen-line (inc gen-line)
+          :gen-col 0))))
   nil)
 
 (defn ^String emit-str [expr]
@@ -238,22 +258,6 @@
         info (if (= (namespace var-name) "js")
                (name var-name)
                info)]
-    (when *cljs-source-map*
-      (when (and (:line env) (symbol? var-name))
-        (let [{:keys [line column]} env]
-          (swap! *cljs-source-map*
-            (fn [m]
-              (let [minfo {:gcol  @*cljs-gen-col*
-                           :gline @*cljs-gen-line*
-                           :name  var-name}]
-                ; Dec the line number for 0-indexed line numbers.
-                ; tools.reader has 0-indexed line number, chrome
-                ; expects 1-indexed source maps.
-                (update-in m [(dec line)]
-                  (fnil (fn [m]
-                          (update-in m [(or column 0)]
-                            (fnil (fn [v] (conj v minfo)) [])))
-                    (sorted-map)))))))))
     ; We need a way to write bindings out to source maps and javascript
     ; without getting wrapped in an emit-wrap calls, otherwise we get
     ; e.g. (function greet(return x, return y) {}).
@@ -272,6 +276,10 @@
 (def ^:private array-map-threshold 8)
 (def ^:private obj-map-threshold 8)
 
+(defn distinct-keys? [keys]
+  (and (every? #(= (:op %) :constant) keys)
+       (= (count (into #{} keys)) (count keys))))
+
 (defmethod emit* :map
   [{:keys [env keys vals]}]
   (let [simple-keys? (every? #(or (string? %) (keyword? %)) keys)]
@@ -281,9 +289,13 @@
         (emits "cljs.core.PersistentArrayMap.EMPTY")
 
         (<= (count keys) array-map-threshold)
-        (emits "cljs.core.PersistentArrayMap.fromArray(["
-               (comma-sep (interleave keys vals))
-               "], true)")
+        (if (distinct-keys? keys)
+          (emits "new cljs.core.PersistentArrayMap(null, " (count keys) ", ["
+            (comma-sep (interleave keys vals))
+            "], null)")
+          (emits "new cljs.core.PersistentArrayMap.fromArray(["
+            (comma-sep (interleave keys vals))
+            "], true, false)"))        
 
         :else
         (emits "cljs.core.PersistentHashMap.fromArrays(["
@@ -312,13 +324,22 @@
      (emits "cljs.core.PersistentVector.fromArray(["
             (comma-sep items) "], true)"))))
 
+(defn distinct-constants? [items]
+  (and (every? #(= (:op %) :constant) items)
+       (= (count (into #{} items)) (count items))))
+
 (defmethod emit* :set
   [{:keys [items env]}]
   (emit-wrap env
-    (if (empty? items)
+    (cond
+      (empty? items)
       (emits "cljs.core.PersistentHashSet.EMPTY")
-      (emits "cljs.core.PersistentHashSet.fromArray(["
-             (comma-sep (interleave items (repeat "null"))) "], true)"))))
+
+      (distinct-constants? items)
+      (emits "new cljs.core.PersistentHashSet(null, new cljs.core.PersistentArrayMap(null, " (count items) ", ["
+        (comma-sep (interleave items (repeat "null"))) "], null), null)")
+
+      :else (emits "cljs.core.PersistentHashSet.fromArray([" (comma-sep items) "], true)"))))
 
 (defmethod emit* :constant
   [{:keys [form env]}]
@@ -452,23 +473,17 @@
 (defn emit-fn-method
   [{:keys [type name variadic params expr env recurs max-fixed-arity]}]
   (emit-wrap env
-             ; Should we emit source-map for this inner declaration?
-             ; It may be unnecessary.
-             ;                   hello.core.greet = (function greet(){})
-             ; e.g. Do we need a source-map entry for this? --^
-
-             ; If so, we can't just munge the name and spit out a string.
-             (emits "(function " (munge name) "(")
-             (emit-fn-params params)
-             (emits "){")
-             (when type
-               (emitln "var self__ = this;"))
-             (when recurs (emitln "while(true){"))
-             (emits expr)
-             (when recurs
-               (emitln "break;")
-               (emitln "}"))
-             (emits "})")))
+    (emits "(function " (munge name) "(")
+    (emit-fn-params params)
+    (emits "){")
+    (when type
+      (emitln "var self__ = this;"))
+    (when recurs (emitln "while(true){"))
+    (emits expr)
+    (when recurs
+      (emitln "break;")
+      (emitln "}"))
+    (emits "})")))
 
 (defn emit-variadic-fn-method
   [{:keys [type name variadic params expr env recurs max-fixed-arity] :as f}]
@@ -761,7 +776,7 @@
   (emit-wrap env (emits target " = " val)))
 
 (defmethod emit* :ns
-  [{:keys [name requires uses requires-macros env]}]
+  [{:keys [name requires uses require-macros env]}]
   (emitln "goog.provide('" (munge name) "');")
   (when-not (= name 'cljs.core)
     (emitln "goog.require('cljs.core');"))
@@ -860,9 +875,11 @@
                     ana/*cljs-file* (.getPath ^File src)
                     reader/*alias-map* (or reader/*alias-map* {})
                     reader/*data-readers* tags/*cljs-data-readers*
-                    *cljs-source-map* (when (:source-map opts) (atom (sorted-map)))
-                    *cljs-gen-line* (atom 0)
-                    *cljs-gen-col* (atom 0)]
+                    *source-map-data* (when (:source-map opts)
+                                        (atom
+                                          {:source-map (sorted-map)
+                                           :gen-col 0
+                                           :gen-line 0}))]
             (emitln "// Compiled by ClojureScript " (clojurescript-version))
             (loop [forms (ana/forms-seq src)
                    ns-name nil
@@ -874,33 +891,28 @@
                     (if (= (:op ast) :ns)
                       (recur (rest forms) (:name ast) (merge (:uses ast) (:requires ast)))
                       (recur (rest forms) ns-name deps))))
-                (do
-                  (when (and (:source-map opts)
-                          (= (:optimizations opts) :none))
+                (let [sm-data (when *source-map-data* @*source-map-data*)
+                      ret (merge
+                            {:ns (or ns-name 'cljs.user)
+                             :provides [ns-name]
+                             :requires (if (= ns-name 'cljs.core)
+                                         (set (vals deps))
+                                         (cond-> (conj (set (vals deps)) 'cljs.core)
+                                           (get-in @env/*compiler* [:opts :emit-constants])
+                                           (conj 'constants-table)))
+                             :file dest
+                             :source-file src}
+                            (when sm-data
+                              {:source-map (:source-map sm-data)}))]
+                  (when (and sm-data (= (:optimizations opts) :none))
                     (let [sm-file (io/file (str (.getPath ^File dest) ".map"))]
                       (emits "\n//# sourceMappingURL=" (.getName sm-file))
                       (spit sm-file
-                        (sm/encode {(url-path src) @*cljs-source-map*}
-                          {:lines (+ @*cljs-gen-line* 2)
-                            :file  (url-path dest)}))))
-                  (let [ret (merge
-                              {:ns (or ns-name 'cljs.user)
-                               :provides [ns-name]
-                               :requires (if (= ns-name 'cljs.core)
-                                           (set (vals deps))
-                                           (cond-> (conj (set (vals deps)) 'cljs.core)
-                                             (get-in @env/*compiler* [:opts :emit-constants])
-                                             (conj 'constants-table)))
-                               :file dest
-                               :source-file src
-                               :lines (+ @*cljs-gen-line*
-                                        (if (and (:source-map opts)
-                                              (= (:optimizations opts) :none))
-                                          2 0))}
-                              (when (:source-map opts)
-                                {:source-map @*cljs-source-map*}))]
-                    (swap! env/*compiler* update-in [::compiled-cljs] assoc (.getAbsolutePath ^File src) ret)
-                    ret))))))))))
+                        (sm/encode {(url-path src) (:source-map sm-data)}
+                          {:lines (+ (:gen-line sm-data) 2)
+                           :file (url-path dest)}))))
+                  (swap! env/*compiler* update-in [::compiled-cljs] assoc (.getAbsolutePath ^File dest) ret)
+                  ret)))))))))
 
 (defn compiled-by-version [^File f]
   (let [match (->> (io/reader f)
@@ -915,14 +927,14 @@
     (env/ensure
       (or (not (.exists dest))
           (> (.lastModified src) (.lastModified dest))
-        (let [version' (compiled-by-version dest)
-              version  (clojurescript-version)]
-          (and version (not= version version')))
-        (and opts
+          (let [version' (compiled-by-version dest)
+                version  (clojurescript-version)]
+            (and version (not= version version')))
+          (and opts
             (:source-map opts)
-             (if (= (:optimizations opts) :none)
-               (not (.exists (io/file (str (.getPath dest) ".map"))))
-               (not (get-in @env/*compiler* [::compiled-cljs (.getAbsolutePath src)]))))))))
+            (if (= (:optimizations opts) :none)
+              (not (.exists (io/file (str (.getPath dest) ".map"))))
+              (not (get-in @env/*compiler* [::compiled-cljs (.getAbsolutePath dest)]))))))))
 
 (defn parse-ns
   ([src] (parse-ns src nil nil))

@@ -30,15 +30,28 @@
   [f] (set! *print-fn* f))
 
 (def ^:dynamic *flush-on-newline* true)
+(def ^:dynamic *print-newline* true)
 (def ^:dynamic *print-readably* true)
 (def ^:dynamic *print-meta* false)
 (def ^:dynamic *print-dup* false)
+(def ^:dynamic *print-length* nil)
 
 (defn- pr-opts []
   {:flush-on-newline *flush-on-newline*
    :readably *print-readably*
    :meta *print-meta*
-   :dup *print-dup*})
+   :dup *print-dup*
+   :print-length *print-length*})
+
+(declare into-array)
+
+(defn enable-console-print!
+  "Set *print-fn* to console.log"
+  []
+  (set! *print-newline* false)
+  (set! *print-fn*
+    (fn [& args]
+      (.apply js/console.log js/console (into-array args)))))
 
 (def
   ^{:doc "bound in a repl thread to the most recent value printed"}
@@ -127,8 +140,12 @@
 
 (defn aclone
   "Returns a javascript array, cloned from the passed in array"
-  [array-like]
-  (.slice array-like))
+  [arr]
+  (let [len (alength arr)
+        new-arr (make-array len)]
+    (dotimes [i len]
+      (aset new-arr i (aget arr i)))
+    new-arr))
 
 (defn array
   "Creates a new javascript array.
@@ -1148,7 +1165,7 @@ reduces them without incurring seq initialization"
 
 (defn- array-copy
   ([from i to j len]
-     (loop [i i j j len len]
+    (loop [i i j j len len]
        (if (zero? len)
          to
          (do (aset to j (aget from i))
@@ -2055,13 +2072,25 @@ reduces them without incurring seq initialization"
       (identical? (.-fqn x) (.-fqn y))
       false)))
 
+(defn namespace
+  "Returns the namespace String of a symbol or keyword, or nil if not present."
+  [x]
+  (if (implements? INamed x)
+    (-namespace ^not-native x)
+    (throw (js/Error. (str "Doesn't support namespace: " x)))))
+
 (defn keyword
   "Returns a Keyword with the given namespace and name.  Do not use :
   in the keyword strings, it will be added automatically."
   ([name] (cond
             (keyword? name) name
-            (symbol? name) (Keyword. nil (cljs.core/name name) (cljs.core/name name) nil)
-            :else (Keyword. nil name name nil)))
+            (symbol? name) (Keyword.
+                             (cljs.core/namespace name)
+                             (cljs.core/name name) (.-str name) nil)
+            (string? name) (let [parts (.split name "/")]
+                             (if (== (alength parts) 2)
+                               (Keyword. (aget parts 0) (aget parts 1) name nil)
+                               (Keyword. nil (aget parts 0) name nil)))))
   ([ns name] (Keyword. ns name (str (when ns (str ns "/")) name) nil)))
 
 
@@ -2418,10 +2447,10 @@ reduces them without incurring seq initialization"
 
 ;;; Transients
 
-(defn transient [coll]
+(defn ^not-native transient [coll]
   (-as-transient coll))
 
-(defn persistent! [tcoll]
+(defn ^not-native persistent! [tcoll]
   (-persistent! tcoll))
 
 (defn conj! [tcoll val]
@@ -3379,8 +3408,11 @@ reduces them without incurring seq initialization"
   ICollection
   (-conj [coll o]
     (if (< (- cnt (tail-off coll)) 32)
-      (let [new-tail (aclone tail)]
-        (.push new-tail o)
+      (let [len (alength tail)
+            new-tail (make-array (inc len))]
+        (dotimes [i len]
+          (aset new-tail i (aget tail i)))
+        (aset new-tail len o)
         (PersistentVector. meta (inc cnt) shift root new-tail nil))
       (let [root-overflow? (> (bit-shift-right-zero-fill cnt 5) (bit-shift-left 1 shift))
             new-shift (if root-overflow? (+ shift 5) shift)
@@ -4393,10 +4425,18 @@ reduces them without incurring seq initialization"
 (set! cljs.core.PersistentArrayMap.HASHMAP_THRESHOLD 8)
 
 (set! cljs.core.PersistentArrayMap.fromArray
-  (fn [arr ^boolean no-clone]
+  (fn [arr ^boolean no-clone ^boolean no-check]
     (let [arr (if no-clone arr (aclone arr))] 
-      (let [cnt (/ (alength arr) 2)]
-        (PersistentArrayMap. nil cnt arr nil)))))
+      (if no-check
+        (let [cnt (/ (alength arr) 2)]
+          (PersistentArrayMap. nil cnt arr nil))
+        (let [len (alength arr)]
+          (loop [i 0
+                 ret (transient cljs.core.PersistentArrayMap.EMPTY)]
+            (if (< i len)
+              (recur (+ i 2)
+                (-assoc! ret (aget arr i) (aget arr (inc i))))
+              (-persistent! ret))))))))
 
 (declare array->transient-hash-map)
 
@@ -6227,15 +6267,18 @@ reduces them without incurring seq initialization"
 (set! cljs.core.PersistentHashSet.fromArray
   (fn [items ^boolean no-clone]
     (let [len (alength items)]
-     (if (<= (/ len 2) cljs.core.PersistentArrayMap.HASHMAP_THRESHOLD)
-       (let [arr (if no-clone items (aclone items))]
-         (PersistentHashSet. nil
-           (cljs.core.PersistentArrayMap.fromArray arr true) nil))
+      (if (<= len cljs.core.PersistentArrayMap.HASHMAP_THRESHOLD)
+        (let [arr (if no-clone items (aclone items))]
+          (loop [i 0
+                 out (transient cljs.core.PersistentArrayMap.EMPTY)]
+            (if (< i len)
+              (recur (inc i) (-assoc! out (aget items i) nil))
+              (cljs.core.PersistentHashSet. nil (-persistent! out) nil))))
        (loop [i 0
               out (transient cljs.core.PersistentHashSet.EMPTY)]
          (if (< i len)
-           (recur (+ i 2) (conj! out (aget items i)))
-           (persistent! out)))))))
+           (recur (+ i 2) (-conj! out (aget items i)))
+           (-persistent! out)))))))
 
 (deftype TransientHashSet [^:mutable transient-map]
   ITransientCollection
@@ -6428,13 +6471,6 @@ reduces them without incurring seq initialization"
     (if (string? x)
       x
       (throw (js/Error. (str "Doesn't support name: " x))))))
-
-(defn namespace
-  "Returns the namespace String of a symbol or keyword, or nil if not present."
-  [x]
-  (if (implements? INamed x)
-    (-namespace ^not-native x)
-    (throw (js/Error. (str "Doesn't support namespace: " x)))))
 
 (defn zipmap
   "Returns a map with the keys mapped to the corresponding vals."
@@ -6753,9 +6789,14 @@ reduces them without incurring seq initialization"
   (-write writer begin)
   (when (seq coll)
     (print-one (first coll) writer opts))
-  (doseq [o (next coll)]
+  (loop [coll (next coll) n (:print-length opts)]
+    (when (and coll (or (nil? n) (not (zero? n))))
+      (-write writer sep)
+      (print-one (first coll) writer opts)
+      (recur (next coll) (dec n))))
+  (when (:print-length opts)
     (-write writer sep)
-    (print-one o writer opts))
+    (print-one "..." writer opts))
   (-write writer end))
 
 (defn write-all [writer & ss]
@@ -6925,7 +6966,8 @@ reduces them without incurring seq initialization"
   "Same as print followed by (newline)"
   [& objs]
   (pr-with-opts objs (assoc (pr-opts) :readably false))
-  (newline (pr-opts)))
+  (when *print-newline*
+    (newline (pr-opts))))
 
 (defn println-str
   "println to a string, returning it"
@@ -6936,7 +6978,8 @@ reduces them without incurring seq initialization"
   "Same as pr followed by (newline)."
   [& objs]
   (pr-with-opts objs (pr-opts))
-  (newline (pr-opts)))
+  (when *print-newline*
+    (newline (pr-opts))))
 
 (extend-protocol IPrintWithWriter
   LazySeq

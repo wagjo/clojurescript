@@ -1982,5 +1982,36 @@
     (assert (= (-> (conj s a b) transient (disj! a) persistent! (conj a))
                (-> (conj s a b) transient (disj! a) persistent! (conj a)))))
 
+  ;; CLJS-660
+
+  (assert (= (-> 'a.b keyword ((juxt namespace name))) [nil "a.b"]))
+  (assert (= (-> 'a.b/c keyword ((juxt namespace name))) ["a.b" "c"]))
+  (assert (= (-> "a.b" keyword ((juxt namespace name))) [nil "a.b"]))
+  (assert (= (-> "a.b/c" keyword ((juxt namespace name))) ["a.b" "c"]))
+
+  ;; CLJS-663
+
+  (assert (= (keyword 123) nil))
+  (assert (= (keyword (js/Date.)) nil))
+
+  ;; CLJS-647
+  (let [keys #(vec (js-keys %))
+        z "x"]
+    (assert (= ["x"]
+               (keys (js-obj "x" "y"))
+               (keys (js-obj (identity "x") "y"))
+               (keys (js-obj z "y")))))
+
+  ;; CLJS-583
+
+  (def some-x 1)
+  (def some-y 1)
+
+  (assert (= (count #{some-x some-y}) 1))
+
+  ;; CLJS-584
+
+  (assert (= (count {some-x :foo some-y :bar}) 1))
+
   :ok
   )

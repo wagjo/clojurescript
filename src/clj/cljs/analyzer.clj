@@ -26,6 +26,7 @@
 (def ^:dynamic *cljs-static-fns* false)
 (def ^:dynamic *cljs-macros-path* "/cljs/core")
 (def ^:dynamic *cljs-macros-is-classpath* true)
+(def ^:dynamic *cljs-dep-set* (with-meta #{} {:dep-path []}))
 (def -cljs-macros-loaded (atom false))
 
 (def ^:dynamic *cljs-warnings*
@@ -42,75 +43,81 @@
    :invalid-protocol-symbol true
    :multiple-variadic-overloads true
    :variadic-max-arity true
-   :overload-arity true})
+   :overload-arity true
+   :extending-base-js-type true})
 
 (declare message namespaces)
 
-(defmulti default-warning-handler* (fn [warning-type & _] warning-type))
+(defmulti error-message (fn [warning-type & _] warning-type))
 
-(defmethod default-warning-handler* :undeclared-var
-  [warning-type extra]
-  (str "Use of undeclared Var " (:prefix extra) "/" (:suffix extra)))
+(defmethod error-message :undeclared-var
+  [warning-type info]
+  (str "Use of undeclared Var " (:prefix info) "/" (:suffix info)))
 
-(defmethod default-warning-handler* :undeclared-ns
-  [warning-type extra]
-  (str "No such namespace: " (:ns-sym extra)))
+(defmethod error-message :undeclared-ns
+  [warning-type info]
+  (str "No such namespace: " (:ns-sym info)))
 
-(defmethod default-warning-handler* :dynamic
-  [warning-type extra]
-  (str (:name extra) " not declared ^:dynamic"))
+(defmethod error-message :dynamic
+  [warning-type info]
+  (str (:name info) " not declared ^:dynamic"))
 
-(defmethod default-warning-handler* :redef
-  [warning-type extra]
-  (str (:sym extra) " already refers to: " (symbol (str (:ns extra)) (str (:sym extra)))
-    " being replaced by: " (symbol (str (:ns-name extra)) (str (:sym extra)))))
+(defmethod error-message :redef
+  [warning-type info]
+  (str (:sym info) " already refers to: " (symbol (str (:ns info)) (str (:sym info)))
+    " being replaced by: " (symbol (str (:ns-name info)) (str (:sym info)))))
 
-(defmethod default-warning-handler* :fn-var
-  [warning-type extra]
-  (str (symbol (str (:ns-name extra)) (str (:sym extra)))
+(defmethod error-message :fn-var
+  [warning-type info]
+  (str (symbol (str (:ns-name info)) (str (:sym info)))
     " no longer fn, references are stale"))
 
-(defmethod default-warning-handler* :fn-arity
-  [warning-type extra]
-  (str "Wrong number of args (" (:argc extra) ") passed to "
-    (or (:ctor extra)
-      (:name extra))))
+(defmethod error-message :fn-arity
+  [warning-type info]
+  (str "Wrong number of args (" (:argc info) ") passed to "
+    (or (:ctor info)
+      (:name info))))
 
-(defmethod default-warning-handler* :fn-deprecated
-  [warning-type extra]
-  (str (-> extra :fexpr :info :name) " is deprecated."))
+(defmethod error-message :fn-deprecated
+  [warning-type info]
+  (str (-> info :fexpr :info :name) " is deprecated."))
 
-(defmethod default-warning-handler* :undeclared-ns-form
-  [warning-type extra]
-  (str "Referred " (:type extra) " " (:lib extra) "/" (:sym extra) " does not exist"))
+(defmethod error-message :undeclared-ns-form
+  [warning-type info]
+  (str "Referred " (:type info) " " (:lib info) "/" (:sym info) " does not exist"))
 
-(defmethod default-warning-handler* :protocol-deprecated
-  [warning-type extra]
-  (str "Protocol " (:protocol extra) " is deprecated"))
+(defmethod error-message :protocol-deprecated
+  [warning-type info]
+  (str "Protocol " (:protocol info) " is deprecated"))
 
-(defmethod default-warning-handler* :undeclared-protocol-symbol
-  [warning-type extra]
-  (str "Can't resolve protocol symbol " (:protocol extra)))
+(defmethod error-message :undeclared-protocol-symbol
+  [warning-type info]
+  (str "Can't resolve protocol symbol " (:protocol info)))
 
-(defmethod default-warning-handler* :invalid-protocol-symbol
-  [warning-type extra]
-  (str "Symbol " (:protocol extra) " is not a protocol"))
+(defmethod error-message :invalid-protocol-symbol
+  [warning-type info]
+  (str "Symbol " (:protocol info) " is not a protocol"))
 
-(defmethod default-warning-handler* :multiple-variadic-overloads
-  [warning-type extra]
-  (str (:name extra) ": Can't have more than 1 variadic overload"))
+(defmethod error-message :multiple-variadic-overloads
+  [warning-type info]
+  (str (:name info) ": Can't have more than 1 variadic overload"))
 
-(defmethod default-warning-handler* :variadic-max-arity
-  [warning-type extra]
-  (str (:name extra) ": Can't have fixed arity function with more params than variadic function"))
+(defmethod error-message :variadic-max-arity
+  [warning-type info]
+  (str (:name info) ": Can't have fixed arity function with more params than variadic function"))
 
-(defmethod default-warning-handler* :overload-arity
-  [warning-type extra]
-  (str (:name extra) ": Can't have 2 overloads with same arity"))
+(defmethod error-message :overload-arity
+  [warning-type info]
+  (str (:name info) ": Can't have 2 overloads with same arity"))
+
+(defmethod error-message :extending-base-js-type
+  [warning-type info]
+  (str "Extending an existing JavaScript type - use a different symbol name "
+       "instead of " (:current-symbol info) " e.g " (:suggested-symbol info)))
 
 (defn ^:private default-warning-handler [warning-type env extra]
   (when (warning-type *cljs-warnings*)
-    (when-let [s (default-warning-handler* warning-type extra)]
+    (when-let [s (error-message warning-type extra)]
       (binding [*out* *err*]
         (println (message env (str "WARNING: " s)))))))
 
@@ -206,7 +213,15 @@
        ~@body)))
 
 (defn empty-env []
-  {:ns (get-namespace *cljs-ns*) :context :statement :locals {}})
+  (env/ensure
+    {:ns (get-namespace *cljs-ns*)
+     :context :statement
+     :locals {}
+     :js-globals (into {}
+                   (map #(vector % {:name %})
+                     '(alert window document console escape unescape
+                       screen location navigator history location
+                       global process require module exports)))}))
 
 (defmacro ^:private debug-prn
   [& args]
@@ -556,7 +571,8 @@
         locals (:locals env)
         name-var (if name
                    {:name name
-                    :shadow (locals name)
+                    :info {:shadow (or (locals name)
+                                       (get-in env [:js-globals name]))}
                     :tag (-> name meta :tag)}) 
         locals (if (and locals name) (assoc locals name name-var) locals)
         type (-> form meta ::type)
@@ -790,13 +806,16 @@
 
 (declare analyze-file)
 
-(defn analyze-deps [deps]
-  (doseq [dep deps]
-    (when-not (contains? (::namespaces @env/*compiler*) dep)
-      (let [relpath (ns->relpath dep)]
-        (when (io/resource relpath)
-          (no-warn
-            (analyze-file relpath)))))))
+(defn analyze-deps [lib deps]
+  (binding [*cljs-dep-set* (vary-meta (conj *cljs-dep-set* lib) update-in [:dep-path] conj lib)]
+    (assert (every? #(not (contains? *cljs-dep-set* %)) deps)
+      (str "Circular dependency detected " (-> *cljs-dep-set* meta :dep-path)))
+    (doseq [dep deps]
+      (when-not (contains? (::namespaces @env/*compiler*) dep)
+        (let [relpath (ns->relpath dep)]
+          (when (io/resource relpath)
+            (no-warn
+              (analyze-file relpath))))))))
 
 (defn check-uses [uses env]
   (doseq [[sym lib] uses]
@@ -952,7 +971,7 @@
                   (apply merge-with merge m (map (spec-parsers k) libs)))
                 {} (remove (fn [[r]] (= r :refer-clojure)) args))]
     (when (seq @deps)
-      (analyze-deps @deps))
+      (analyze-deps name @deps))
     (when (seq uses)
       (check-uses uses env))
     (set! *cljs-ns* name)
@@ -1131,7 +1150,11 @@
   [env sym]
   (if (:quoted? env)
     {:op :constant :env env :form sym}
-    (let [ret {:env env :form sym}
+    (let [{:keys [line column]} (meta sym)
+          env (cond-> env
+                line (assoc :line line)
+                column (assoc :column column))
+          ret {:env env :form sym}
           lb (-> env :locals sym)]
       (if lb
         (assoc ret :op :var :info lb)
@@ -1296,7 +1319,7 @@ argument, which the reader will use in any emitted errors."
                     form (binding [*ns* (create-ns *cljs-ns*)
                                    reader/*alias-map*
                                    (apply merge
-                                          ((juxt :requires :requires-macros)
+                                          ((juxt :requires :require-macros)
                                            (get-namespace *cljs-ns*)))]
                            (reader/read rdr nil eof-sentinel))]
                 (if (identical? form eof-sentinel)

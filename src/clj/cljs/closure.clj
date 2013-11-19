@@ -748,7 +748,7 @@
                         relpaths))
                     (if-let [url (:url source)]
                       (let [path (.getPath ^URL url)]
-                        (if-let [compiled (get-in @env/*compiler* [::compiled-cljs path])]
+                        (if-let [compiled (get-in @env/*compiler* [::comp/compiled-cljs path])]
                           (if-let [source-url (:source-url source)]
                             (assoc merged (.getPath ^URL source-url)
                               (sm/merge-source-maps
@@ -761,7 +761,8 @@
                   (sm/encode merged
                     {:lines (+ (:lineCount sm-json) 2)
                      :file (:file sm-json)
-                     :output-dir (:output-dir opts)
+                     :output-dir (output-directory opts)
+                     :source-map-path (:source-map-path opts)
                      :relpaths relpaths}))))))
         source)
       (report-failure result))))
@@ -889,12 +890,18 @@
     (if (or (not url)
             (= (.getProtocol url) "jar"))
       (write-javascript opts js)
+      ;; always copy original sources to the output directory
+      ;; when source maps enabled
       (let [out-file (if-let [ns (and (:source-map opts)
                                       (first (:provides js)))]
                        (io/file (io/file (output-directory opts))
-                         (ana/ns->relpath ns)))]
-        (when (and out-file (not (.exists ^File out-file)))
-          (spit out-file (slurp (:source-url js))))
+                         (ana/ns->relpath ns)))
+            source-url (:source-url js)]
+        (when (and out-file source-url
+                   (or (not (.exists ^File out-file))
+                       (> (.lastModified (io/file source-url))
+                          (.lastModified out-file))))
+          (spit out-file (slurp source-url)))
         js))))
 
 (comment

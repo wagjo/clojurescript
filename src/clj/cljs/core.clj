@@ -32,6 +32,7 @@
                             bit-test bit-shift-left bit-shift-right bit-xor
                             cond-> cond->> as-> some-> some->>])
   (:require clojure.walk
+            clojure.set
             cljs.compiler
             [cljs.env :as env]))
 
@@ -575,6 +576,14 @@
       'boolean "boolean"
       'default "_"})
 
+(def #^:private js-base-type
+     {'js/Boolean "boolean"
+      'js/String "string"
+      'js/Array "array"
+      'js/Object "object"
+      'js/Number "number"
+      'js/Function "function"})
+
 (defmacro reify [& impls]
   (let [t      (gensym "t")
         meta-sym (gensym "meta")
@@ -739,6 +748,10 @@
         [type assign-impls] (if-let [type (base-type type-sym)]
                               [type base-assign-impls]
                               [(resolve type-sym) proto-assign-impls])]
+    (when (and (:extending-base-js-type cljs.analyzer/*cljs-warnings*)
+               (js-base-type type-sym))
+      (cljs.analyzer/warning :extending-base-js-type env
+          {:current-symbol type-sym :suggested-symbol (js-base-type type-sym)}))
     `(do ~@(mapcat #(assign-impls env resolve type-sym type %) impl-map))))
 
 (defn- prepare-protocol-masks [env impls]
@@ -1280,43 +1293,81 @@
   `(js/Array. ~size))
 
 (defmacro list
-  ([] ())
+  ([] `cljs.core.List.EMPTY)
   ([x & xs]
     `(-conj (list ~@xs) ~x)))
 
 (defmacro vector
-  [& xs]
-  `[~@xs])
+  ([] `cljs.core.PersistentVector.EMPTY)
+  ([& xs]
+    (let [cnt (count xs)]
+      (if (core/< cnt 32)
+        `(cljs.core.PersistentVector. nil ~cnt 5
+           cljs.core.PersistentVector.EMPTY_NODE (array ~@xs) nil)
+        `(cljs.core.PersistentVector.fromArray (array ~@xs) true)))))
 
 (defmacro array-map
-  [& kvs]
-  (if (core/> (count kvs) 8)
-    `(hash-map ~@kvs)
-    `(cljs.core.PersistentArrayMap.fromArray (array ~@kvs) true)))
+  ([] `cljs.core.PersistentArrayMap.EMPTY)
+  ([& kvs]
+    (cond
+      (core/> (count kvs) 16)
+      `(hash-map ~@kvs)
+      
+      (let [keys (map first (partition 2 kvs))]
+        (core/and (every? #(= (:op %) :constant)
+                    (map #(cljs.analyzer/analyze &env %) keys))
+                  (= (count (into #{} keys)) (count keys))))
+      `(cljs.core.PersistentArrayMap. nil ~(clojure.core// (count kvs) 2) (array ~@kvs) nil)
+
+      :else
+      `(cljs.core.PersistentArrayMap.fromArray (array ~@kvs) true false))))
 
 (defmacro hash-map
-  [& kvs]
-  (let [pairs (partition 2 kvs)
-        ks    (map first pairs)
-        vs    (map second pairs)]
-    `(cljs.core.PersistentHashMap.fromArrays (array ~@ks) (array ~@vs))))
+  ([] `cljs.core.PersistentHashMap.EMPTY)
+  ([& kvs]
+    (let [pairs (partition 2 kvs)
+          ks    (map first pairs)
+          vs    (map second pairs)]
+      `(cljs.core.PersistentHashMap.fromArrays (array ~@ks) (array ~@vs)))))
 
 (defmacro hash-set
-  [& xs]
-  `#{~@xs})
+  ([] `cljs.core.PersistentHashSet.EMPTY)
+  ([& xs]
+    (if (core/and (every? #(= (:op %) :constant)
+                    (map #(cljs.analyzer/analyze &env %) xs))
+                  (= (count (into #{} xs)) (count xs)))
+      `(cljs.core.PersistentHashSet. nil
+         (cljs.core.PersistentArrayMap. nil ~(count xs) (array ~@(interleave xs (repeat nil))) nil)
+         nil)
+      `(cljs.core.PersistentHashSet.fromArray (array ~@xs) true))))
 
-(defmacro js-obj [& rest]
+(defn js-obj* [kvs]
   (let [kvs-str (->> (repeat "~{}:~{}")
-                     (take (quot (count rest) 2))
+                     (take (count kvs))
                      (interpose ",")
                      (apply core/str))]
-    (list* 'js* (core/str "{" kvs-str "}") rest)))
+    (list* 'js* (core/str "{" kvs-str "}") (apply concat kvs))))
+
+(defmacro js-obj [& rest]
+  (let [sym-or-str? (fn [x] (core/or (core/symbol? x) (core/string? x)))
+        filter-on-keys (fn [f coll]
+                         (->> coll
+                              (filter (fn [[k _]] (f k)))
+                              (into {})))
+        kvs (into {} (map vec (partition 2 rest)))
+        sym-pairs (filter-on-keys core/symbol? kvs)
+        expr->local (zipmap
+                     (filter (complement sym-or-str?) (keys kvs))
+                     (repeatedly gensym))
+        obj (gensym "obj")]
+    `(let [~@(apply concat (clojure.set/map-invert expr->local))
+           ~obj ~(js-obj* (filter-on-keys core/string? kvs))]
+       ~@(map (fn [[k v]] `(aset ~obj ~k ~v)) sym-pairs)
+       ~@(map (fn [[k v]] `(aset ~obj ~v ~(core/get kvs k))) expr->local)
+       ~obj)))
 
 (defmacro alength [a]
   (core/list 'js* "~{}.length" a))
-
-(defmacro aclone [a]
-  (core/list 'js* "~{}.slice()" a))
 
 (defmacro amap
   "Maps an expression across an array a, using an index named idx, and
